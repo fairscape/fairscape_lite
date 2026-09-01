@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fairscape-lite"
+version = "0.1.0"
+description = "A FAIRSCAPE metadata server small enough for one person to run"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2",
+    "fairscape-models",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "httpx", "fairscape-graph-tools"]
+
+[project.urls]
+Homepage = "https://github.com/fairscape/fairscape_lite"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fairscape_lite = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

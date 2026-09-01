@@ -1,0 +1,19 @@
+# the index is local data, never committed
+fairscape.db
+fairscape.db-wal
+fairscape.db-shm
+*.db
+
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+
+web/node_modules/
+web/dist/
+
+# local reference screenshots
+pics/
+web/tsconfig.tsbuildinfo
