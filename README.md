@@ -45,6 +45,7 @@ just itself. Nothing is copied — the server indexes files where they are.
 | `GET /identifier?id=`                     | resolve any @id (URLs too)                 |
 | `GET /entity?crate=&type=`                | list entities, filterable                  |
 | `GET /search?q=`                          | full-text search                           |
+| `GET /entity/links?id=`                   | edges into and out of one @id              |
 | `GET /evidencegraph/ark:{naan}/{postfix}` | provenance graph, built fresh              |
 | `GET /evidencegraph?id=`                  | same, for non-ARK @ids                     |
 | `GET /ui/`                                | the web app                                |

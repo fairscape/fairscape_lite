@@ -114,3 +114,30 @@ def test_crate_root_confines_registration(client, monkeypatch, tmp_path):
     assert outside.status_code == 403
     inside = write_crate(tmp_path / "ok", "ark:99999/inside")
     assert client.post("/rocrate", json={"path": str(inside)}).status_code == 200
+
+
+def test_register_a_tree_with_a_bad_crate_reports_it_and_keeps_going(client, tmp_path):
+    from conftest import write_crate
+    write_crate(tmp_path / "ok", "ark:99999/tree-ok")
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "ro-crate-metadata.json").write_text("{ not json")
+    body = client.post("/rocrate", json={"path": str(tmp_path)}).json()
+    by_dir = {r["path"].split("/")[-2]: r for r in body["registered"]}
+    assert by_dir["ok"]["crate"] == "ark:99999/tree-ok" and by_dir["ok"]["error"] is None
+    assert by_dir["bad"]["error"] and by_dir["bad"]["skipped"]
+
+
+def test_register_a_tree_validates_like_a_single_file(client, tmp_path):
+    (tmp_path / "shape").mkdir()
+    (tmp_path / "shape" / "ro-crate-metadata.json").write_text(
+        '{"@context": {}, "@graph": [{"@id": "x"}]}')      # the single-file 422 case
+    body = client.post("/rocrate", json={"path": str(tmp_path)}).json()
+    assert body["registered"][0]["error"].startswith("not a valid RO-Crate")
+
+
+def test_entity_links(client):
+    body = client.get("/entity/links", params={"id": DATASET}).json()
+    assert body["@id"] == DATASET
+    assert {"predicate": "hasPart", "@id": LAKEDB} in body["incoming"]
+    assert all({"predicate", "@id"} == set(e) for e in body["outgoing"] + body["incoming"])
+    assert client.get("/entity/links", params={"id": "ark:59852/nope"}).status_code == 404

@@ -16,7 +16,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 from .models import (
     Crate,
@@ -400,12 +400,16 @@ def ingest(
     path: str | os.PathLike,
     data: Optional[dict] = None,
     force: bool = False,
+    validate: Optional[Callable[[dict], None]] = None,
 ) -> IngestStats:
     """Index one ro-crate-metadata.json.
 
     `data` lets a caller that already parsed the file hand it over rather
     than have it read a second time -- the HTTP endpoint validates the
-    parse it made, then passes it straight through.
+    parse it made, then passes it straight through. `validate` is called
+    on the parse before anything is written (it raises to reject); the
+    endpoint passes fairscape_models validation so a tree walk applies
+    the same rule a single-file registration does.
     """
     file_path = metadata_file(path)
     try:
@@ -422,6 +426,8 @@ def ingest(
 
     if data is None:
         data = read_crate(file_path)
+    if validate is not None:
+        validate(data)
 
     descriptor, root_id, _root = find_root(data)
     graph = data.get("@graph") or []
@@ -462,7 +468,10 @@ def ingest(
 
 
 def ingest_tree(
-    con: sqlite3.Connection, directory: str | os.PathLike, force: bool = False
+    con: sqlite3.Connection,
+    directory: str | os.PathLike,
+    force: bool = False,
+    validate: Optional[Callable[[dict], None]] = None,
 ) -> list[IngestStats]:
     """Index every crate under `directory`.
 
@@ -470,13 +479,29 @@ def ingest_tree(
     at the department's crate mount and it registers whatever is there.
     Sub-crates are found by walking, not by following links out of a
     parent -- a parent's copy of a child root is just another node.
+
+    One bad file must not sink the walk: a crate that is malformed, not a
+    crate, or unreadable gets an IngestStats with `error` set and the walk
+    goes on. Each ingest is its own transaction, so a failure leaves the
+    crates before it registered and the index consistent.
     """
     skip = {"node_modules", ".git", "__pycache__", ".venv", "venv"}
     results = []
     for dirpath, dirnames, filenames in os.walk(Path(directory).expanduser()):
         dirnames[:] = sorted(d for d in dirnames if d not in skip)
-        if METADATA_FILENAME in filenames:
-            results.append(ingest(con, Path(dirpath) / METADATA_FILENAME, force=force))
+        if METADATA_FILENAME not in filenames:
+            continue
+        file_path = Path(dirpath) / METADATA_FILENAME
+        try:
+            results.append(ingest(con, file_path, force=force, validate=validate))
+        except (ValueError, MissingCrateFile) as exc:
+            # pydantic's ValidationError is a ValueError; give it the same
+            # wording the single-file endpoint uses.
+            reason = str(exc)
+            if hasattr(exc, "error_count") and hasattr(exc, "errors"):
+                reason = (f"not a valid RO-Crate: {exc.error_count()} "
+                          f"problem(s); first: {exc.errors()[0]}")
+            results.append(IngestStats(path=str(file_path), skipped=True, error=reason))
     return results
 
 
@@ -623,6 +648,10 @@ def list_crates(con: sqlite3.Connection) -> list[CrateSummary]:
 
 def stale(con: sqlite3.Connection) -> list[CrateSummary]:
     """Registered crates whose files have moved, changed or vanished."""
+    recorded = {
+        r["id"]: (r["mtime"], r["size"])
+        for r in con.execute("SELECT id, mtime, size FROM crate")
+    }
     out = []
     for crate in list_crates(con):
         try:
@@ -630,10 +659,7 @@ def stale(con: sqlite3.Connection) -> list[CrateSummary]:
         except OSError:
             out.append(crate)
             continue
-        row = con.execute(
-            "SELECT mtime, size FROM crate WHERE id = ?", (crate.id,)
-        ).fetchone()
-        if row["mtime"] != stat.st_mtime or row["size"] != stat.st_size:
+        if recorded[crate.id] != (stat.st_mtime, stat.st_size):
             out.append(crate)
     return out
 

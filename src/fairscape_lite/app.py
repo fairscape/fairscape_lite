@@ -109,7 +109,8 @@ def register(body: Registration, con=Depends(connection)):
 
     if path.is_dir() and not (path / db.METADATA_FILENAME).exists():
         return {"registered": [s.model_dump() for s in
-                              db.ingest_tree(con, path, force=body.force)]}
+                              db.ingest_tree(con, path, force=body.force,
+                                             validate=validate_crate)]}
 
     file_path = db.metadata_file(path)
     try:
@@ -222,6 +223,22 @@ def entities(
     found = db.list_entities(con, crate=crate, entity_type=type,
                              limit=limit, offset=offset)
     return {"entities": [e.model_dump() for e in found]}
+
+
+@app.get("/entity/links")
+def entity_links(
+    id: str = Query(description="any @id: ARK, URL or relative path"),
+    con=Depends(connection),
+):
+    """Every indexed edge into and out of one @id.
+
+    Outgoing is what the node itself asserts (hasPart, generatedBy, used*);
+    incoming is what other nodes assert about it -- which crates contain
+    it, which computations used it. That second direction is the question
+    a crate file alone cannot answer, and the reason the edge table exists.
+    """
+    entity = must_resolve(con, id)
+    return {"@id": entity.id, **db.neighbors(con, entity.id)}
 
 
 @app.get("/search")
