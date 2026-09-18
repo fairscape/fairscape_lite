@@ -35,4 +35,3 @@ class SQLConfig():
         self.engine = create_engine(self.connectionString, query_cache_size=cacheSize) 
         Base.metadata.create_all(self.engine)
         return self.engine
-

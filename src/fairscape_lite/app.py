@@ -25,9 +25,15 @@ from typing import Iterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.orm import sessionmaker, session
+from sqlalchemy import select
+
+from fairscape_models.sql.models import ROCrateMetadataElemSQL
 
 from . import db, graph
 from .models import Identifier, validate_crate
+from .config import SQLConfig
+from .examples import crate_sql
 
 CRATE_ROOT = os.environ.get("FAIRSCAPE_LITE_ROOT")
 
@@ -37,6 +43,13 @@ app = FastAPI(
     description=__doc__,
 )
 
+# creating sql config
+sql_config = SQLConfig(filepath="/tmp/fairscape.db")
+sql_engine = sql_config.engine()
+session_factory = sessionmaker(bind=sql_engine)
+
+def get_connection()->session:
+    return session_factory()    
 
 def connection() -> Iterator[sqlite3.Connection]:
     con = db.connect()
@@ -96,6 +109,31 @@ class Registration(BaseModel):
 # --------------------------------------------------------------------------
 # Crates
 # --------------------------------------------------------------------------
+@app.post("/test-add")
+def test(conn=Depends(get_connection)):
+    # create an object inside the 
+
+    conn.add(crate_sql)
+    conn.flush()
+    conn.close()
+
+    return {"message": "created rocrate",}
+
+
+@app.get("/test-get")
+def test_get(conn=Depends(get_connection)):
+    # query and return crate_sql
+    q = select(ROCrateMetadataElemSQL.guid)
+    results = conn.scalars(q)
+    conn.close()
+
+    return {"results": list(results)}
+
+
+#@app.post("/upload")
+#def upload(inputFile: Annotated[bytes, UploadFile], con=Depends(get_connection)):
+#    pass
+
 
 @app.post("/rocrate")
 def register(body: Registration, con=Depends(connection)):
