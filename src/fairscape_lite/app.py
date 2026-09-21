@@ -21,9 +21,9 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import sessionmaker, session
 from sqlalchemy import select
@@ -130,9 +130,11 @@ def test_get(conn=Depends(get_connection)):
     return {"results": list(results)}
 
 
-#@app.post("/upload")
-#def upload(inputFile: Annotated[bytes, UploadFile], con=Depends(get_connection)):
-#    pass
+@app.post("/upload")
+def upload(inputFile: Annotated[bytes, UploadFile], conn=Depends(get_connection)):
+
+
+    pass
 
 
 @app.post("/rocrate")

@@ -1,6 +1,9 @@
 from fairscape_models.sql.models import Base
 from sqlalchemy.engine import Engine
 from sqlalchemy import event, create_engine
+import pathlib
+
+from fairscape_lite.errors import ROCrateExistsError
 
 
 @event.listens_for(Engine, "connect")
@@ -10,6 +13,22 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.close()
+
+class FilepathConfig():
+    def __init__(self, storageFilepath: str):
+        self.storageFilepath = pathlib.Path(storageFilepath)
+
+        if not self.storageFilepath.exists():
+            self.storageFilepath.mkdir(exist_ok=True)
+
+    def outputPath(self, filename: str) -> pathlib.Path:
+        ''' Return the output filepath as a pathlib object for an ROCrate request'''
+        outputFilepath = self.storageFilepath / filename
+
+        if outputFilepath.exists():
+            raise ROCrateExistsError("ROCrate Already Exists", 400)
+        
+        return outputFilepath
 
 
 class SQLConfig():
