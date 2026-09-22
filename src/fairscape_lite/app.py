@@ -21,18 +21,20 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+import ijson
+import zipfile
 from typing import Iterator, Optional, Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import sessionmaker, session
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-from fairscape_models.sql.models import ROCrateMetadataElemSQL
+from fairscape_models.sql.models import ROCrateMetadataElemSQL, ROCrateRegistration
 
 from . import db, graph
 from .models import Identifier, validate_crate
-from .config import SQLConfig
+from .config import SQLConfig, FilepathConfig
 from .examples import crate_sql
 
 CRATE_ROOT = os.environ.get("FAIRSCAPE_LITE_ROOT")
@@ -47,6 +49,8 @@ app = FastAPI(
 sql_config = SQLConfig(filepath="/tmp/fairscape.db")
 sql_engine = sql_config.engine()
 session_factory = sessionmaker(bind=sql_engine)
+
+storage = FilepathConfig("/tmp/server_content")
 
 def get_connection()->session:
     return session_factory()    
@@ -105,10 +109,89 @@ class Registration(BaseModel):
     path: str          # a ro-crate-metadata.json, or a directory to walk
     force: bool = False
 
+# --------------------------------------------------------------------------
+# Crate Crud Functions
+# --------------------------------------------------------------------------
+def getZipInfo(zip_ref, path_within_zip):
+    try:
+        return zip_ref.getinfo(path_within_zip)
+    except KeyError:
+        return None
+
+def findRootMetadata(input_filepath, input_filename):
+    with zipfile.ZipFile(input_filepath) as zip_ref:
+    # With local file tests
+    #with zipfile.ZipFile(str(input_filepath), 'r') as zip_ref:
+        # is ro-crate-metadata.json at the top of the directory
+        name = 'ro-crate-metadata.json'
+        results = getZipInfo(zip_ref, name)	
+
+        # within the zip a folder named as the stem with ro-crate-metadata.json
+        if not results:
+            name = f"{Path(input_filename).stem}/{name}"
+            results = getZipInfo(zip_ref, name)	
+
+        # default to search namelist
+        if not results:
+            namelist = zip_ref.namelist()
+            matchingROCrates = [ elem for elem in namelist if 'ro-crate-metadata.json' in elem]
+
+            if len(matchingROCrates) == 0:
+                raise Exception()
+            else:
+                results = matchingROCrates[0]
+
+        return results
+
+def readOnlyMetadata(input_filepath, input_filename):
+    """ Return ROCrate GUID, Name, and Version from zipped input file"""
+    root_metadata = findRootMetadata(input_filepath, input_filename)
+    metadata_path_within_zip = root_metadata.filename
+
+    with zipfile.ZipFile(input_filepath) as zip_ref:
+    # With local file tests
+    #with zipfile.ZipFile(str(input_filepath), 'r') as zip_ref:
+        f = zip_ref.open(metadata_path_within_zip)
+        objects = ijson.items(f, '@graph.item')
+        rocrates = [ 
+            {
+                "@id": o.get("@id"), 
+                "name": o.get("name"), 
+                "version": o.get("version")
+            } for o in objects if "https://w3id.org/EVI#ROCrate" in o.get('@type')]
+
+    return rocrates[0]
+
+def determineVersion(session, crate_guid: str) -> int:
+    """ Determine version for input rocrate"""
+    max_version_query = select(func.max(ROCrateRegistration.version)).filter_by(guid=crate_guid)
+    max_version_results = session.scalar(max_version_query)
+
+    if not max_version_results:
+        input_version = 1
+    # if it exists set the version 
+    else:
+        input_version = max_version_results + 1
+
+    return input_version
+
+def writeOutputFile(input_file, output_path: Path):
+    """ Write out input ROCrate to Output Path"""
+    input_file.seek(0)
+
+    chunk_size = 65536
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    with output_path.open("wb") as output_file:
+        while True:
+            chunk = input_file.read(chunk_size)
+            if not chunk:
+                break
+            output_file.write(chunk)
 
 # --------------------------------------------------------------------------
 # Crates
 # --------------------------------------------------------------------------
+
 @app.post("/test-add")
 def test(conn=Depends(get_connection)):
     # create an object inside the 
@@ -131,10 +214,44 @@ def test_get(conn=Depends(get_connection)):
 
 
 @app.post("/upload")
-def upload(inputFile: Annotated[bytes, UploadFile], conn=Depends(get_connection)):
+def upload(inputFile: UploadFile, conn=Depends(get_connection)):
+    if not inputFile:
+        return {"error": "file cannot be null"}
+    if not inputFile.filename:
+        return {"error": "file missing filename"}
 
+    # get the metadata from the input file
+    input_metadata = readOnlyMetadata(inputFile.file, inputFile.filename)
+    input_crate_guid = input_metadata.get("@id")
 
-    pass
+    if not input_crate_guid:
+        return {"error": "@id not found"}
+    
+    input_version = determineVersion(conn, input_crate_guid)
+
+    input_file_stem = Path(inputFile.filename).stem
+    output_path = storage.storageFilepath / input_file_stem / f"v{input_version}" / inputFile.filename 
+
+    new_registration = ROCrateRegistration(
+        guid = input_crate_guid,
+        filepath = str(output_path),
+        version = input_version
+    )
+    conn.add(new_registration)
+    conn.flush()
+
+    conn.close()
+
+    # write the output file
+    writeOutputFile(inputFile.file, output_path)
+
+    # return the registration 
+    return {
+        "@id": new_registration.guid, 
+        "filepath": new_registration.filepath,
+        "version": new_registration.version,
+        "time_registered": new_registration.time_registered
+    }
 
 
 @app.post("/rocrate")
