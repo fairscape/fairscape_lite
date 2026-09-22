@@ -238,7 +238,16 @@ def upload(inputFile: UploadFile, conn=Depends(get_connection)):
         version = input_version
     )
     conn.add(new_registration)
-    conn.flush()
+
+    response = {
+        "@id": new_registration.guid, 
+        "upload_id": new_registration.id,
+        "filepath": new_registration.filepath,
+        "version": new_registration.version,
+        "time_registered": new_registration.time_registered
+    }
+
+    conn.commit()
 
     conn.close()
 
@@ -246,12 +255,33 @@ def upload(inputFile: UploadFile, conn=Depends(get_connection)):
     writeOutputFile(inputFile.file, output_path)
 
     # return the registration 
-    return {
-        "@id": new_registration.guid, 
-        "filepath": new_registration.filepath,
-        "version": new_registration.version,
-        "time_registered": new_registration.time_registered
+    return response 
+
+
+@app.get("/upload")
+def list_uploads(conn=Depends(get_connection)):
+    upload_query = select(ROCrateRegistration)
+    upload_results = conn.scalars(upload_query)
+
+    return [{
+        "@id": up.guid,
+        "filepath": up.filepath,
+        "version": up.version
     }
+    for up in upload_results]
+
+
+@app.post("/register")
+def register_rocrate(rocrate_guid: str, conn=Depends(get_connection)):
+    # find registered rocrate
+    rocrate_query = select(ROCrateRegistration).filter_by(guid=rocrate_guid)
+    rocrate_results = conn.scalars(rocrate_query)
+
+    # find the filepath
+
+    pass
+
+
 
 
 @app.post("/rocrate")
