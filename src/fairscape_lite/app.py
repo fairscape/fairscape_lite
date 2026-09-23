@@ -1,32 +1,39 @@
-"""The whole HTTP surface: twelve endpoints over a SQLite index.
+"""The whole HTTP surface: fourteen endpoints over a SQLite index.
 
 Deployment posture -- read this before exposing the port
 --------------------------------------------------------
 This is the *shared-filesystem* server, and it has no auth: it is meant
 for localhost, or for a network segment you already trust. Registration
 hands the server a path on the local filesystem and it indexes what it
-finds there. It never receives an upload, never copies a crate, and
-never serves file bytes -- `contentUrl` resolves for a peer because the
-peer mounts the same tree (or because the URL points at Dataverse, as it
-does for most CM4AI crates).
+finds there, copying nothing. Upload is the one exception: a peer with
+no shared mount POSTs a zip and the server unpacks it under
+FAIRSCAPE_LITE_UPLOADS, then registers the result like any other path
+(see upload.py for how local file references are kept intact). The
+server still never serves file bytes -- a local `contentUrl` resolves
+because the peer mounts the same tree, or because GET /rocrate/files
+tells them the path.
 
 FAIRSCAPE_LITE_ROOT confines registration to one directory. Without it,
 anyone who can reach the port can ask the server to read any
 world-readable JSON on the host and then serve it back. It is unset by
 default, which is right for `localhost` and wrong for anything else.
+Uploads are not confined by it -- they land where the server chooses --
+but anyone who can reach the port can fill the disk up to
+FAIRSCAPE_LITE_MAX_UNPACKED per request.
 """
 
 from __future__ import annotations
 
 import os
 import sqlite3
+import zipfile
 from pathlib import Path
 from typing import Iterator, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
 
-from . import db, graph
+from . import db, graph, upload as uploads
 from .models import Identifier, validate_crate
 
 CRATE_ROOT = os.environ.get("FAIRSCAPE_LITE_ROOT")
@@ -88,6 +95,11 @@ def must_resolve(con: sqlite3.Connection, identifier: str):
     return entity
 
 
+def invalid_crate(exc: ValidationError) -> HTTPException:
+    return HTTPException(422, f"not a valid RO-Crate: {exc.error_count()} "
+                              f"problem(s); first: {exc.errors()[0]}")
+
+
 class Registration(BaseModel):
     path: str          # a ro-crate-metadata.json, or a directory to walk
     force: bool = False
@@ -123,8 +135,7 @@ def register(body: Registration, con=Depends(connection)):
     try:
         validate_crate(data)
     except ValidationError as exc:
-        raise HTTPException(422, f"not a valid RO-Crate: {exc.error_count()} "
-                                 f"problem(s); first: {exc.errors()[0]}")
+        raise invalid_crate(exc)
 
     try:
         stats = db.ingest(con, file_path, data=data, force=body.force)
@@ -135,9 +146,110 @@ def register(body: Registration, con=Depends(connection)):
     return stats.model_dump()
 
 
+@app.post("/rocrate/upload")
+def upload_crate(
+    file: UploadFile = File(description="a .zip of the crate directory, or a bare "
+                                        "ro-crate-metadata.json"),
+    con=Depends(connection),
+):
+    """Receive a crate the client has no shared path for, then index it.
+
+    The archive is unpacked verbatim under FAIRSCAPE_LITE_UPLOADS -- the
+    directory that holds ro-crate-metadata.json arrives with everything
+    under it at the same relative paths, which is exactly what keeps a
+    `file:///data/x.csv` or `data/x.csv` contentUrl pointing at the
+    right file. Sub-crates in the archive are registered too. The
+    response says where the crate landed and which of its local
+    references resolve there; GET /rocrate/files repeats that later.
+
+    A bare ro-crate-metadata.json is accepted as well. For a crate
+    uploaded before, it replaces only the metadata file and keeps the
+    data files; otherwise it becomes a one-file crate whose local
+    references are all reported missing.
+
+    Always re-indexes (unpacked files have fresh mtimes), so this is
+    also how a peer updates a crate: upload it again.
+    """
+    source = uploads.spool(file.file)
+    try:
+        try:
+            unpacked = uploads.receive(
+                source, validate=validate_crate,
+                existing=_registered_path(con, source),
+            )
+        except uploads.TooLarge as exc:
+            raise HTTPException(413, str(exc))
+        except ValidationError as exc:
+            raise invalid_crate(exc)
+        except (uploads.BadUpload, ValueError, zipfile.BadZipFile) as exc:
+            raise HTTPException(422, str(exc))
+    finally:
+        source.unlink(missing_ok=True)
+
+    registered = db.ingest_tree(con, unpacked.directory, force=True,
+                                validate=validate_crate)
+    return {
+        "crate": unpacked.root_id,
+        "kind": unpacked.kind,
+        "directory": str(unpacked.directory),
+        "path": str(unpacked.metadata),
+        "members": unpacked.members,
+        "skipped_members": unpacked.skipped,
+        "files": uploads.file_report(
+            uploads.local_files(unpacked.data, unpacked.metadata.parent)),
+        "registered": [s.model_dump() for s in registered],
+    }
+
+
+def _registered_path(con, source: Path) -> Optional[Path]:
+    """Where this crate's metadata file already is, for a bare-JSON upload.
+
+    Cheap peek: only a non-zip upload can need it, and the parse is the
+    same one `receive` is about to do.
+    """
+    if zipfile.is_zipfile(source):
+        return None
+    try:
+        root_id = db.find_root(db.read_crate(source))[1]
+    except (ValueError, db.MissingCrateFile):
+        return None
+    path = db.crate_path(con, root_id)
+    return Path(path) if path else None
+
+
 @app.get("/rocrate")
 def crates(con=Depends(connection)):
     return {"crates": [c.model_dump() for c in db.list_crates(con)]}
+
+
+@app.get("/rocrate/files")
+def crate_files(
+    id: str = Query(description="the crate root's @id"),
+    con=Depends(connection),
+):
+    """Every local contentUrl in a crate, resolved to a path on this host.
+
+    "The metadata says file:///data/x.csv -- where is it?" answered
+    for uploaded and path-registered crates alike: the reference is
+    joined to the directory holding the crate's ro-crate-metadata.json
+    and checked for existence. Remote URLs (https, ftp, ...) are not
+    listed; they resolve wherever they point.
+    """
+    entity = must_resolve(con, id)
+    path = db.crate_path(con, entity.id)
+    if path is None:
+        raise HTTPException(404, f"{id} is not a registered crate")
+    try:
+        data = db.read_crate(path)
+    except db.MissingCrateFile as exc:
+        raise HTTPException(409, str(exc))
+    crate_dir = Path(path).parent
+    return {
+        "crate": entity.id,
+        "directory": str(crate_dir),
+        "uploaded": uploads.is_uploaded(path),
+        "files": uploads.local_files(data, crate_dir),
+    }
 
 
 @app.get("/rocrate/stale")
@@ -172,6 +284,8 @@ def crate_metadata(
 @app.delete("/rocrate")
 def unregister(
     id: str = Query(description="the crate root's @id"),
+    purge: bool = Query(default=False, description="also delete the files, "
+                        "if this crate was uploaded"),
     con=Depends(connection),
 ):
     """Forget a crate and everything it supplied.
@@ -179,11 +293,17 @@ def unregister(
     Entities another crate contributed are untouched; entities *this*
     crate owned go, even where another crate's file also contains them.
     Re-register that crate to bring them back.
+
+    `purge` additionally removes the crate's directory, but only when it
+    lies under FAIRSCAPE_LITE_UPLOADS. Files registered by path are the
+    user's own and are never deleted, whatever the flag says.
     """
     entity = must_resolve(con, id)
+    path = db.crate_path(con, entity.id)
     if not db.forget(con, entity.id):
         raise HTTPException(404, f"{id} is not a registered crate")
-    return {"forgotten": entity.id}
+    purged = uploads.purge(path) if purge and path else None
+    return {"forgotten": entity.id, "purged": purged}
 
 
 # --------------------------------------------------------------------------

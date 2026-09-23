@@ -130,8 +130,8 @@ const DashboardPage = () => {
         {rows !== null && rows.length === 0 && (
           <Empty>
             Nothing registered yet. Index a crate with{" "}
-            <code>POST /rocrate {"{"}"path": "…"{"}"}</code> and it will appear
-            here.
+            <code>POST /rocrate {"{"}"path": "…"{"}"}</code>, or upload a zip
+            with <code>POST /rocrate/upload</code>, and it will appear here.
           </Empty>
         )}
         {rows !== null && rows.length > 0 && (

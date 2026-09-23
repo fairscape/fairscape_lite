@@ -14,6 +14,7 @@ dependencies = [
     "uvicorn",
     "pydantic>=2",
     "fairscape-models",
+    "python-multipart",   # FastAPI multipart uploads (POST /rocrate/upload)
 ]
 
 [project.optional-dependencies]

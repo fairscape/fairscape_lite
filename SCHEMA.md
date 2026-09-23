@@ -27,6 +27,14 @@ The old server stored a full copy of each node in Mongo and had a
 long tail of bugs where the copy and the crate had diverged. Those bugs
 are not fixed here; they are structurally impossible.
 
+Uploads do not change this. `POST /rocrate/upload` unpacks the archive
+under `FAIRSCAPE_LITE_UPLOADS` and then registers the resulting
+`ro-crate-metadata.json` by path, so an uploaded crate is an ordinary
+`crate` row whose `path` happens to point into the uploads directory.
+`upload.py` explains why the archive is unpacked verbatim (crate-relative
+`contentUrl`s must keep resolving) and how the per-crate directory is
+named.
+
 ## The three tables
 
 ### `crate` — one row per registered `ro-crate-metadata.json`
