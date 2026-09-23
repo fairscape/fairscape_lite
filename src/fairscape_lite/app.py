@@ -35,7 +35,6 @@ from fairscape_models.sql.models import ROCrateMetadataElemSQL, ROCrateRegistrat
 from . import db, graph
 from .models import Identifier, validate_crate
 from .config import SQLConfig, FilepathConfig
-from .examples import crate_sql
 
 CRATE_ROOT = os.environ.get("FAIRSCAPE_LITE_ROOT")
 
@@ -118,7 +117,7 @@ def getZipInfo(zip_ref, path_within_zip):
     except KeyError:
         return None
 
-def findRootMetadata(input_filepath, input_filename):
+def findRootMetadata(input_filepath, input_filename)->zipfile.ZipInfo:
     with zipfile.ZipFile(input_filepath) as zip_ref:
     # With local file tests
     #with zipfile.ZipFile(str(input_filepath), 'r') as zip_ref:
@@ -133,17 +132,17 @@ def findRootMetadata(input_filepath, input_filename):
 
         # default to search namelist
         if not results:
-            namelist = zip_ref.namelist()
+            namelist = zip_ref.infolist()
             matchingROCrates = [ elem for elem in namelist if 'ro-crate-metadata.json' in elem]
 
             if len(matchingROCrates) == 0:
-                raise Exception()
+                raise Exception(f"No ROCrate Found within Zip {input_filename}")
             else:
                 results = matchingROCrates[0]
 
         return results
 
-def readOnlyMetadata(input_filepath, input_filename):
+def getBasicRootMetadata(input_filepath, input_filename):
     """ Return ROCrate GUID, Name, and Version from zipped input file"""
     root_metadata = findRootMetadata(input_filepath, input_filename)
     metadata_path_within_zip = root_metadata.filename
@@ -191,27 +190,9 @@ def writeOutputFile(input_file, output_path: Path):
 # --------------------------------------------------------------------------
 # Crates
 # --------------------------------------------------------------------------
-
-@app.post("/test-add")
-def test(conn=Depends(get_connection)):
-    # create an object inside the 
-
-    conn.add(crate_sql)
-    conn.flush()
-    conn.close()
-
-    return {"message": "created rocrate",}
-
-
-@app.get("/test-get")
-def test_get(conn=Depends(get_connection)):
-    # query and return crate_sql
-    q = select(ROCrateMetadataElemSQL.guid)
-    results = conn.scalars(q)
-    conn.close()
-
-    return {"results": list(results)}
-
+@app.post("/validate")
+def validate_registration(conn=Depends(get_connection)):
+    pass
 
 @app.post("/upload")
 def upload(inputFile: UploadFile, conn=Depends(get_connection)):
@@ -235,10 +216,11 @@ def upload(inputFile: UploadFile, conn=Depends(get_connection)):
     new_registration = ROCrateRegistration(
         guid = input_crate_guid,
         filepath = str(output_path),
-        version = input_version
+        version = input_version,
+        processed = False
     )
     conn.add(new_registration)
-
+    conn.commit()
     response = {
         "@id": new_registration.guid, 
         "upload_id": new_registration.id,
@@ -246,8 +228,6 @@ def upload(inputFile: UploadFile, conn=Depends(get_connection)):
         "version": new_registration.version,
         "time_registered": new_registration.time_registered
     }
-
-    conn.commit()
 
     conn.close()
 
@@ -272,9 +252,9 @@ def list_uploads(conn=Depends(get_connection)):
 
 
 @app.post("/register")
-def register_rocrate(rocrate_guid: str, conn=Depends(get_connection)):
+def register_rocrate(upload_id: int, conn=Depends(get_connection)):
     # find registered rocrate
-    rocrate_query = select(ROCrateRegistration).filter_by(guid=rocrate_guid)
+    rocrate_query = select(ROCrateRegistration).filter_by(id=upload_id)
     rocrate_results = conn.scalars(rocrate_query)
 
     # find the filepath
