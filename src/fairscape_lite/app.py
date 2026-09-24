@@ -226,7 +226,8 @@ def upload(inputFile: UploadFile, conn=Depends(get_connection)):
         "upload_id": new_registration.id,
         "filepath": new_registration.filepath,
         "version": new_registration.version,
-        "time_registered": new_registration.time_registered
+        "time_registered": new_registration.time_registered,
+        "processed": False
     }
 
     conn.close()
