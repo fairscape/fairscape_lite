@@ -29,8 +29,24 @@ from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import sessionmaker, session
 from sqlalchemy import select, func
+from collections import defaultdict
+import sqlalchemy
+import re
 
-from fairscape_models.sql.models import ROCrateMetadataElemSQL, ROCrateRegistration
+from fairscape_models.sql.models import (
+    MetadataTypeEnumSQL, 
+    IdentifiersSQL,
+    ROCrateRegistration,
+    ROCrateMetadataElemSQL,
+    DatasetSQL,
+    SoftwareSQL,
+    ComputationSQL,
+    ComputationUsedDatasetSQL,
+    ComputationGeneratedDatasetSQL,
+    MembershipSQL,
+)
+from fairscape_models.sql.utils import DetermineMetadataTypeSQL
+
 
 from . import db, graph
 from .models import Identifier, validate_crate
@@ -187,6 +203,134 @@ def writeOutputFile(input_file, output_path: Path):
                 break
             output_file.write(chunk)
 
+# Crate Registration
+
+def processIdentifierValue(input_list)->list[str]:
+    """ Convert a list of Identifiers which may come as strings or dictionaries into a list of strings
+    
+    
+    e.g.
+        [
+            "doi:9999/test",
+            {"@id": "ark:59853/example"}	
+        ]	
+
+        returns ["doi:9999/test", "@id": "ark:59853/example"]
+    """
+    output_list = []
+    for elem in input_list:
+        if isinstance(elem, dict):
+            output_list.append(elem.get("@id"))
+        elif isinstance(elem, str): 
+            output_list.append(elem)
+
+    return output_list
+
+
+def writeComputationProv(session, computation_generator):
+    for comp in computation_generator:
+        comp_guid = comp.get("@id")
+
+        comp_generated = processIdentifierValue(comp.get("generated"))
+        comp_used_dataset = processIdentifierValue(comp.get("usedDataset"))
+
+        generated_prov_rows = [ {
+            "computationGUID": comp_guid,
+            "datasetGUID": gen_ds 
+        } for gen_ds in comp_generated]
+
+        used_prov_rows = [ {
+            "computationGUID": comp_guid,
+            "datasetGUID": gen_ds 
+        } for gen_ds in comp_used_dataset]
+
+        session.execute(
+            sqlalchemy.insert(ComputationGeneratedDatasetSQL), 
+            generated_prov_rows
+        )	
+
+        session.execute(
+            sqlalchemy.insert(ComputationUsedDatasetSQL), 
+            used_prov_rows
+        )	
+
+selectDictKeys = lambda inputData, keyList: { key: inputData.get(key) for key in keyList}
+
+ROCrateMetadataElemDictKeys = ["name", "description", "keywords", "version", "datePublished"]
+DatasetDictKeys = ["name", "description", "keywords", "version", "datePublished"]
+SoftwareDictKeys = ["name", "description", "keywords", "version", "datePublished"]
+ComputationDictKeys = ["name", "description", "keywords", "dateCreated"]
+
+
+TABLE_SPECS = {
+    MetadataTypeEnumSQL.DATASET:     (DatasetSQL,     DatasetDictKeys,     "author"),
+    MetadataTypeEnumSQL.SOFTWARE:    (SoftwareSQL,    SoftwareDictKeys,    "author"),
+    MetadataTypeEnumSQL.COMPUTATION: (ComputationSQL, ComputationDictKeys, "runBy"),
+}
+
+
+def transformDictAuthor(input_author)->list:
+	if isinstance(input_author, str):
+		author_list = [ auth_elem.lstrip(" ") for auth_elem in re.split(f'[,&]', input_author)]
+
+	elif isinstance(input_author, list):
+		# TODO processing and cleaning list of authors
+		author_list = input_author
+
+		# list of strings
+
+		# list of dictionary
+	return author_list
+
+
+
+def uploadMetadata(session, metadata_fp):
+    """ Process the metadata upload in"""
+    rows = defaultdict(list)
+    computations, identifiers, members = [], [], []
+    rocrate_guid = None
+
+    metadata_fp.seek(0)
+    for o in ijson.items(metadata_fp, "@graph.item"):
+                    guid = o.get("@id")
+                    if guid == "ro-crate-metadata.json":
+                                    rocrate_guid = o.get("about", {}).get("@id")
+                                    continue
+                    
+                    mtype = DetermineMetadataTypeSQL(o.get("@type"))   # classify once
+
+                    identifiers.append({"guid": guid, "name": o.get("name"), "metadataType": mtype})
+
+                    members.append({"childGUID": guid, "childType": mtype})
+
+                    spec = TABLE_SPECS.get(mtype)
+                    if spec:
+                                    model, keys, author_field = spec
+                                    rows[model].append({
+                                                    "guid": guid,
+                                                    "author": transformDictAuthor(o.get(author_field)),
+                                                    "fileFormat": o.get("format"),
+                                                    **selectDictKeys(o, keys),
+                                    })
+                    if mtype == MetadataTypeEnumSQL.COMPUTATION:
+                                    computations.append(o)
+
+    if rocrate_guid is None:
+                    raise ValueError("ro-crate-metadata.json descriptor not found")
+    for m in members:
+                    m["parentGUID"] = rocrate_guid
+                    m["parentType"] = MetadataTypeEnumSQL.ROCRATE
+
+    # Writes
+    for model in (DatasetSQL, SoftwareSQL, ComputationSQL):
+                    if rows[model]:
+                                    session.execute(sqlalchemy.insert(model), rows[model])
+    writeComputationProv(session, iter(computations))
+    if identifiers:
+                    session.execute(sqlalchemy.insert(IdentifiersSQL), identifiers)
+    if members:
+                    session.execute(sqlalchemy.insert(MembershipSQL), members)
+    session.commit()
 # --------------------------------------------------------------------------
 # Crates
 # --------------------------------------------------------------------------
@@ -202,7 +346,7 @@ def upload(inputFile: UploadFile, conn=Depends(get_connection)):
         return {"error": "file missing filename"}
 
     # get the metadata from the input file
-    input_metadata = readOnlyMetadata(inputFile.file, inputFile.filename)
+    input_metadata = getBasicRootMetadata(inputFile.file, inputFile.filename)
     input_crate_guid = input_metadata.get("@id")
 
     if not input_crate_guid:
@@ -256,12 +400,27 @@ def list_uploads(conn=Depends(get_connection)):
 def register_rocrate(upload_id: int, conn=Depends(get_connection)):
     # find registered rocrate
     rocrate_query = select(ROCrateRegistration).filter_by(id=upload_id)
-    rocrate_results = conn.scalars(rocrate_query)
+    rocrate_results = conn.scalars(rocrate_query).all()
+    matched_crate = rocrate_results[0]
 
-    # find the filepath
+    if len(rocrate_results) == 0:
+        return {"error": "ROCrate Upload not found"}
 
-    pass
+    crate_filepath = Path(matched_crate.filepath)
+    with crate_filepath.open("rb") as open_crate_file:
+        root_metadata_within_zip = findRootMetadata(
+            input_filepath =  open_crate_file,
+            input_filename=crate_filepath.name
+        ).filename
 
+    zip_ref = zipfile.ZipFile(str(crate_filepath), 'r')
+    open_metadata_file = zip_ref.open(root_metadata_within_zip)
+
+    uploadMetadata(session=conn, metadata_fp=open_metadata_file)
+
+    open_metadata_file.close()
+
+    return {"registered": {"@id": matched_crate.guid}}
 
 
 
