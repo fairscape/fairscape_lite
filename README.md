@@ -1,96 +1,73 @@
-# fairscape_lite
+# fairscape-lite
 
-A local FAIRSCAPE metadata server. One SQLite file and one fastapi process.
+A small FAIRSCAPE server you run yourself: one FastAPI process and one SQLite
+file. Point it at a folder of RO-Crates and you get a web UI, search, ARK
+resolution and evidence graphs.
 
-Point it at a directory already containing RO-Crates. It indexes them. You get a
-web UI, search, and evidence graphs.
+It is the self-hosted **publish** step of [FAIRSCAPE](https://fairscape.github.io),
+next to [fairscape_publish](https://github.com/fairscape/fairscape_publish),
+which pushes crates to public repositories.
 
 ## Install
 
 ```bash
+git clone https://github.com/fairscape/fairscape_lite && cd fairscape_lite
 pip install -e .
 cd web && npm install && npm run build && cd ..
 ```
 
-## Run
+## Example
 
 ```bash
 uvicorn fairscape_lite.app:app --port 8000
 ```
 
-Open http://localhost:8000, that's the UI.
-
-## Add your crates
+Register a folder of crates. The server indexes them where they are and copies
+nothing:
 
 ```bash
-curl -X POST localhost:8000/rocrate \
-     -H 'Content-Type: application/json' \
+curl -X POST localhost:8000/rocrate -H 'Content-Type: application/json' \
      -d '{"path": "/data/my-crates"}'
 ```
 
-A directory gets walked. A single `ro-crate-metadata.json` registers
-just itself. Nothing is copied — the server indexes files where they are.
-
-No shared path? Upload the crate instead:
+Or upload a zipped crate:
 
 ```bash
 curl -F file=@my-crate.zip localhost:8000/rocrate/upload
 ```
 
-The zip is unpacked verbatim under `uploads/` (wrapping folder and all)
-and then registered like any other path. Because nothing inside is
-moved or renamed, a crate-relative `contentUrl` — `file:///data/x.csv`
-or `data/x.csv`, both meaning "next to my ro-crate-metadata.json" —
-still points at the right file. The response says where the crate
-landed and which of its local references resolve there:
-
-```json
-{"crate": "ark:59852/rocrate-…", "kind": "zip",
- "directory": "/srv/fairscape/uploads/ark-59852-rocrate-…-1a2b3c4d",
- "path": "/srv/fairscape/uploads/ark-59852-rocrate-…-1a2b3c4d/my-crate/ro-crate-metadata.json",
- "files": {"local": 12, "found": 12, "missing": []}, "registered": [ … ]}
-```
-
-Later, `GET /rocrate/files?id=…` answers "where is the file for dataset
-X" for any registered crate. Uploading a crate again replaces it in
-place; uploading a bare `ro-crate-metadata.json` for a crate you already
-uploaded replaces just that file and keeps the data.
+Then open http://localhost:8000/ui/.
 
 ## Endpoints
 
-| Endpoint                                  | Does                                       |
-| ----------------------------------------- | ------------------------------------------ |
-| `POST /rocrate`                           | register a crate file, or walk a directory |
-| `POST /rocrate/upload`                    | upload a crate zip (or bare metadata file) |
-| `GET /rocrate`                            | list registered crates                     |
-| `GET /rocrate/files?id=`                  | a crate's local files, resolved on disk    |
-| `GET /rocrate/metadata?id=`               | a crate's metadata file, verbatim          |
-| `GET /rocrate/stale`                      | crates whose files moved or changed        |
-| `POST /rocrate/reingest`                  | re-read every registered crate             |
-| `DELETE /rocrate?id=&purge=`              | forget a crate (`purge` deletes an upload) |
-| `GET /ark:{naan}/{postfix}`               | resolve an ARK                             |
-| `GET /identifier?id=`                     | resolve any @id (URLs too)                 |
-| `GET /entity?crate=&type=`                | list entities, filterable                  |
-| `GET /search?q=`                          | full-text search                           |
-| `GET /entity/links?id=`                   | edges into and out of one @id              |
-| `GET /evidencegraph/ark:{naan}/{postfix}` | provenance graph, built fresh              |
-| `GET /evidencegraph?id=`                  | same, for non-ARK @ids                     |
-| `GET /ui/`                                | the web app                                |
+| Endpoint | Does |
+|---|---|
+| `POST /rocrate` | Registers a crate file, or indexes every crate in a folder |
+| `POST /rocrate/upload` | Uploads a crate zip (or a bare metadata file) |
+| `GET /rocrate` | Lists registered crates |
+| `GET /search?q=` | Full-text search |
+| `GET /ark:{naan}/{postfix}` | Resolves an ARK |
+| `GET /evidencegraph/ark:{naan}/{postfix}` | Returns the provenance graph |
+| `GET /entity/links?id=` | Returns the edges into and out of one `@id` |
+| `GET /rocrate/files?id=` | Returns a crate's local files, found on disk |
+| `DELETE /rocrate?id=` | Removes a crate from the index |
 
-## Settings (all optional)
+The full list is at `/docs` while the server is running.
 
-| Env var               | Default          | Does                                                                               |
-| --------------------- | ---------------- | ---------------------------------------------------------------------------------- |
-| `FAIRSCAPE_LITE_DB`   | `./fairscape.db` | where the index lives                                                              |
-| `FAIRSCAPE_LITE_ROOT` | unset            | only register crates under this directory. Set it if the port isn't localhost-only |
-| `FAIRSCAPE_LITE_UPLOADS` | `./uploads`   | where uploaded crates are unpacked                                                 |
-| `FAIRSCAPE_LITE_MAX_UNPACKED` | 8 GiB    | refuse a zip that would unpack past this many bytes                                |
+## Settings
+
+| Env var | Default | Does |
+|---|---|---|
+| `FAIRSCAPE_LITE_DB` | `./fairscape.db` | Where the index is stored |
+| `FAIRSCAPE_LITE_ROOT` | unset | Only register crates under this folder. Set it if the port is open beyond localhost. |
+| `FAIRSCAPE_LITE_UPLOADS` | `./uploads` | Where uploaded crates are unpacked |
+| `FAIRSCAPE_LITE_MAX_UNPACKED` | 8 GiB | Rejects zips that would unpack larger than this |
 
 ## Develop
 
 ```bash
 pip install -e ".[test]"
-pytest                     # 128 tests
+pytest
 cd web && npm run dev      # UI with hot reload on :5173
 ```
 
