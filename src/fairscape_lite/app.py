@@ -205,6 +205,17 @@ def writeOutputFile(input_file, output_path: Path):
 
 # Crate Registration
 
+def sanitize_ark(input_guid: str)->str:
+    """ Given an input GUID strip out the ark, if no ark is present return the existing string
+    """
+    identifier_expression = r'ark:[0-9]{5}\\/[a-zA-Z0-9_\\-]+.$'
+    ark_matches = re.search(identifier_expression, input_guid)
+
+    if ark_matches:
+        return ark_matches.group()
+    else:
+        return input_guid
+
 def processIdentifierValue(input_list)->list[str]:
     """ Convert a list of Identifiers which may come as strings or dictionaries into a list of strings
     
@@ -220,16 +231,16 @@ def processIdentifierValue(input_list)->list[str]:
     output_list = []
     for elem in input_list:
         if isinstance(elem, dict):
-            output_list.append(elem.get("@id"))
+            output_list.append(sanitize_ark(elem.get("@id")))
         elif isinstance(elem, str): 
-            output_list.append(elem)
+            output_list.append(sanitize_ark(elem))
 
     return output_list
 
 
 def writeComputationProv(session, computation_generator):
     for comp in computation_generator:
-        comp_guid = comp.get("@id")
+        comp_guid = sanitize_ark(comp.get("@id"))
 
         comp_generated = processIdentifierValue(comp.get("generated"))
         comp_used_dataset = processIdentifierValue(comp.get("usedDataset"))
@@ -282,16 +293,6 @@ def transformDictAuthor(input_author)->list:
 
         # list of dictionary
     return author_list
-
-
-def sanitize_ark(input_guid: str)->str:
-    identifier_expression = r'ark:[0-9]{5}/*.+$'
-    ark_matches = re.search(identifier_expression, input_guid)
-
-    if ark_matches:
-        return ark_matches.group()
-    else:
-        return input_guid
 
 
 def uploadMetadata(session, metadata_fp):
@@ -405,7 +406,8 @@ def list_uploads(conn=Depends(get_connection)):
     return [{
         "@id": up.guid,
         "filepath": up.filepath,
-        "version": up.version
+        "version": up.version,
+        "processed": up.processed
     }
     for up in upload_results]
 
@@ -413,11 +415,9 @@ def list_uploads(conn=Depends(get_connection)):
 @app.post("/register")
 def register_rocrate(upload_id: int, conn=Depends(get_connection)):
     # find registered rocrate
-    rocrate_query = select(ROCrateRegistration).filter_by(id=upload_id)
-    rocrate_results = conn.scalars(rocrate_query).all()
-    matched_crate = rocrate_results[0]
+    matched_crate = conn.query(ROCrateRegistration).filter_by(id=upload_id).first()
 
-    if len(rocrate_results) == 0:
+    if not matched_crate:
         return {"error": "ROCrate Upload not found"}
 
     crate_filepath = Path(matched_crate.filepath)
@@ -433,6 +433,11 @@ def register_rocrate(upload_id: int, conn=Depends(get_connection)):
     uploadMetadata(session=conn, metadata_fp=open_metadata_file)
 
     open_metadata_file.close()
+
+    # update the ROCrateRegistration to set processed to true
+    matched_crate.processed = True
+    conn.commit()
+    
 
     return {"registered": {"@id": matched_crate.guid}}
 
