@@ -266,71 +266,85 @@ TABLE_SPECS = {
     MetadataTypeEnumSQL.DATASET:     (DatasetSQL,     DatasetDictKeys,     "author"),
     MetadataTypeEnumSQL.SOFTWARE:    (SoftwareSQL,    SoftwareDictKeys,    "author"),
     MetadataTypeEnumSQL.COMPUTATION: (ComputationSQL, ComputationDictKeys, "runBy"),
+    MetadataTypeEnumSQL.ROCRATE: (ROCrateMetadataElemSQL, ROCrateMetadataElemDictKeys, "author")
 }
 
 
 def transformDictAuthor(input_author)->list:
-	if isinstance(input_author, str):
-		author_list = [ auth_elem.lstrip(" ") for auth_elem in re.split(f'[,&]', input_author)]
+    if isinstance(input_author, str):
+        author_list = [ auth_elem.lstrip(" ") for auth_elem in re.split(f'[,&]', input_author)]
 
-	elif isinstance(input_author, list):
-		# TODO processing and cleaning list of authors
-		author_list = input_author
+    elif isinstance(input_author, list):
+        # TODO processing and cleaning list of authors
+        author_list = input_author
 
-		# list of strings
+        # list of strings
 
-		# list of dictionary
-	return author_list
+        # list of dictionary
+    return author_list
 
+
+def sanitize_ark(input_guid: str)->str:
+    identifier_expression = r'ark:[0-9]{5}/*.+$'
+    ark_matches = re.search(identifier_expression, input_guid)
+
+    if ark_matches:
+        return ark_matches.group()
+    else:
+        return input_guid
 
 
 def uploadMetadata(session, metadata_fp):
-    """ Process the metadata upload in"""
+    """ Given an open metadata file and a session to a database, process all ro-crate-metadata.json entities into SQL"""
     rows = defaultdict(list)
     computations, identifiers, members = [], [], []
     rocrate_guid = None
 
     metadata_fp.seek(0)
     for o in ijson.items(metadata_fp, "@graph.item"):
-                    guid = o.get("@id")
-                    if guid == "ro-crate-metadata.json":
-                                    rocrate_guid = o.get("about", {}).get("@id")
-                                    continue
+        guid = sanitize_ark(o.get("@id"))
+        if guid == "ro-crate-metadata.json":
+            rocrate_guid = sanitize_ark(o.get("about", {}).get("@id"))
+            continue
                     
-                    mtype = DetermineMetadataTypeSQL(o.get("@type"))   # classify once
+        mtype = DetermineMetadataTypeSQL(o.get("@type"))   # classify once
 
-                    identifiers.append({"guid": guid, "name": o.get("name"), "metadataType": mtype})
+        identifiers.append({"guid": guid, "name": o.get("name"), "metadataType": mtype})
 
-                    members.append({"childGUID": guid, "childType": mtype})
+        members.append({"childGUID": guid, "childType": mtype})
 
-                    spec = TABLE_SPECS.get(mtype)
-                    if spec:
-                                    model, keys, author_field = spec
-                                    rows[model].append({
-                                                    "guid": guid,
-                                                    "author": transformDictAuthor(o.get(author_field)),
-                                                    "fileFormat": o.get("format"),
-                                                    **selectDictKeys(o, keys),
-                                    })
-                    if mtype == MetadataTypeEnumSQL.COMPUTATION:
-                                    computations.append(o)
+        spec = TABLE_SPECS.get(mtype)
+        if spec:
+            model, keys, author_field = spec
+            rows[model].append({
+                "guid": guid,
+                "author": transformDictAuthor(o.get(author_field)),
+                "fileFormat": o.get("format"),
+                **selectDictKeys(o, keys),
+                })
+            if mtype == MetadataTypeEnumSQL.COMPUTATION:
+                computations.append(o)
 
     if rocrate_guid is None:
-                    raise ValueError("ro-crate-metadata.json descriptor not found")
+        raise ValueError("ro-crate-metadata.json descriptor not found")
     for m in members:
-                    m["parentGUID"] = rocrate_guid
-                    m["parentType"] = MetadataTypeEnumSQL.ROCRATE
+        m["parentGUID"] = rocrate_guid
+        m["parentType"] = MetadataTypeEnumSQL.ROCRATE
 
     # Writes
     for model in (DatasetSQL, SoftwareSQL, ComputationSQL):
-                    if rows[model]:
-                                    session.execute(sqlalchemy.insert(model), rows[model])
+        if rows[model]:
+            session.execute(sqlalchemy.insert(model), rows[model])
+
     writeComputationProv(session, iter(computations))
+
     if identifiers:
-                    session.execute(sqlalchemy.insert(IdentifiersSQL), identifiers)
+        session.execute(sqlalchemy.insert(IdentifiersSQL), identifiers)
     if members:
-                    session.execute(sqlalchemy.insert(MembershipSQL), members)
+        session.execute(sqlalchemy.insert(MembershipSQL), members)
     session.commit()
+
+
 # --------------------------------------------------------------------------
 # Crates
 # --------------------------------------------------------------------------
@@ -423,6 +437,20 @@ def register_rocrate(upload_id: int, conn=Depends(get_connection)):
     return {"registered": {"@id": matched_crate.guid}}
 
 
+@app.get("/entity")
+def entities(
+    crate: Optional[str] = Query(default=None, description="scope to one crate @id"),
+    type: Optional[str] = Query(default=None, description="Dataset, Computation, ..."),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    con=Depends(connection),
+):
+    """List entities, newest crate registration last. Index columns only."""
+    if crate:
+        crate = must_resolve(con, crate).id
+    found = db.list_entities(con, crate=crate, entity_type=type,
+                             limit=limit, offset=offset)
+    return {"entities": [e.model_dump() for e in found]}
 
 @app.post("/rocrate")
 def register(body: Registration, con=Depends(connection)):
@@ -535,20 +563,6 @@ def resolve_any(
     return envelope(con, must_resolve(con, id))
 
 
-@app.get("/entity")
-def entities(
-    crate: Optional[str] = Query(default=None, description="scope to one crate @id"),
-    type: Optional[str] = Query(default=None, description="Dataset, Computation, ..."),
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    con=Depends(connection),
-):
-    """List entities, newest crate registration last. Index columns only."""
-    if crate:
-        crate = must_resolve(con, crate).id
-    found = db.list_entities(con, crate=crate, entity_type=type,
-                             limit=limit, offset=offset)
-    return {"entities": [e.model_dump() for e in found]}
 
 
 @app.get("/search")
