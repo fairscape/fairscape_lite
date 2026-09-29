@@ -208,7 +208,7 @@ def writeOutputFile(input_file, output_path: Path):
 def sanitize_ark(input_guid: str)->str:
     """ Given an input GUID strip out the ark, if no ark is present return the existing string
     """
-    identifier_expression = r'ark:[0-9]{5}\\/[a-zA-Z0-9_\\-]+.$'
+    identifier_expression = r'ark:[0-9]{5}/[a-zA-Z0-9_-]+.$'
     ark_matches = re.search(identifier_expression, input_guid)
 
     if ark_matches:
@@ -304,27 +304,45 @@ def uploadMetadata(session, metadata_fp):
     metadata_fp.seek(0)
     for o in ijson.items(metadata_fp, "@graph.item"):
         guid = sanitize_ark(o.get("@id"))
+
         if guid == "ro-crate-metadata.json":
             rocrate_guid = sanitize_ark(o.get("about", {}).get("@id"))
             continue
+        
+        members.append({"childGUID": guid, "childType": mtype})
+
+        # check if guid exists in the identifier table
+        # if the guid exists, i.e. a piece of software being used in multiple ro-crates
+        # it will not be added again to the transaction
+        guid_exists = session.query(IdentifiersSQL.guid).filter_by(guid=guid).count()
+
+        if guid_exists>0:
+            continue
                     
         mtype = DetermineMetadataTypeSQL(o.get("@type"))   # classify once
-
         identifiers.append({"guid": guid, "name": o.get("name"), "metadataType": mtype})
 
-        members.append({"childGUID": guid, "childType": mtype})
 
         spec = TABLE_SPECS.get(mtype)
         if spec:
             model, keys, author_field = spec
-            rows[model].append({
+            row_data = {
                 "guid": guid,
                 "author": transformDictAuthor(o.get(author_field)),
                 "fileFormat": o.get("format"),
                 **selectDictKeys(o, keys),
-                })
+            }
+
             if mtype == MetadataTypeEnumSQL.COMPUTATION:
                 computations.append(o)
+                # adding usedSoftware prov to computation
+                usedSoftware = processIdentifierValue(o.get("usedSoftware"))
+
+                if isinstance(usedSoftware, list):
+                    if len(usedSoftware) == 1:
+                        row_data['usedSoftware'] = usedSoftware[0]
+            
+            rows[model].append(row_data)
 
     if rocrate_guid is None:
         raise ValueError("ro-crate-metadata.json descriptor not found")
@@ -419,6 +437,9 @@ def register_rocrate(upload_id: int, conn=Depends(get_connection)):
 
     if not matched_crate:
         return {"error": "ROCrate Upload not found"}
+
+    if matched_crate.processed:
+        return {"error": "ROCrate is already processed"}
 
     crate_filepath = Path(matched_crate.filepath)
     with crate_filepath.open("rb") as open_crate_file:
