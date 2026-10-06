@@ -6,8 +6,7 @@ is a function. A department-scale corpus rebuilds one in milliseconds, and
 a graph that is computed on demand can never be stale.
 
 The output is the same shape the old server returned -- `outputs` plus a
-`@graph` keyed by @id -- because the web client destructures it. Parity
-with `fairscape_graph_tools.EvidenceGraphBuilder` is enforced by a test.
+`@graph` keyed by @id -- because the web client destructures it.
 """
 
 from __future__ import annotations
@@ -81,21 +80,9 @@ class CrateReader:
                 found[guid] = node
         return found
 
-    # `GraphSource` protocol conformance, so the parity test can hand this
-    # same reader to the real EvidenceGraphBuilder.
-    def find_entity(self, ark_id: str) -> Optional[dict]:
-        return self.find_many([ark_id]).get(ark_id)
-
-    def find_dataset_stats(self, ark_ids: Iterable[str]) -> Dict[str, dict]:
-        return {}          # no statistics service in the lite server
-
-    def build_full_graph(self, rocrate_id: str) -> List[dict]:
-        return list(collect(self, rocrate_id).values())
-
 
 # --------------------------------------------------------------------------
-# Vocabulary helpers -- deliberately mirror fairscape_graph_tools so the
-# two implementations agree on what a node "is".
+# Vocabulary helpers -- what a node "is", as far as traversal cares.
 # --------------------------------------------------------------------------
 
 def is_rocrate(node_type: Any) -> bool:
@@ -136,29 +123,51 @@ def first_ref(value: Any) -> Optional[str]:
     return found[0] if found else None
 
 
+# Where an RO-Crate root lists what it contains, tried in order; the first
+# field holding any references wins. Hand-built crates write `EVI:Outputs`,
+# and crates with no outputs at all (release crates) fall back to `hasPart`.
+ROCRATE_OUTPUT_FIELDS = (
+    "https://w3id.org/EVI#Outputs", "EVI:Outputs", "Outputs",
+    "https://w3id.org/EVI#outputs", "EVI:outputs", "outputs",
+    "https://schema.org/hasPart", "hasPart",
+)
+
+
+def rocrate_outputs_field(node: dict) -> Optional[str]:
+    for field in ROCRATE_OUTPUT_FIELDS:
+        if node.get(field):
+            return field
+    return None
+
+
 def rocrate_outputs(node: dict) -> List[dict]:
-    for field in ("https://w3id.org/EVI#outputs", "EVI:outputs", "outputs"):
-        if field in node:
-            value = node[field]
-            if isinstance(value, list):
-                return value
-            if isinstance(value, dict):
-                return [value]
+    field = rocrate_outputs_field(node)
+    value = node.get(field) if field else None
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
     return []
 
 
 def referenced_ids(node: dict) -> set[str]:
-    """The next hop of the BFS: one step further back in provenance."""
+    """The next hop of the BFS: one step further back in provenance.
+
+    A crate also contributes what it lists, wherever it sits in the walk,
+    so a release crate opens up into its sub-crates and their outputs.
+    """
+    out: set[str] = set()
+    if is_rocrate(node.get("@type", "")):
+        out.update(refs(rocrate_outputs(node)))
     type_str = type_string(node.get("@type", ""))
     if is_entity_like(type_str):
         comp = first_ref(node.get(GENERATED_BY))
-        return {comp} if comp else set()
-    if is_activity_like(type_str):
-        out: set[str] = set()
+        if comp:
+            out.add(comp)
+    elif is_activity_like(type_str):
         for field in USED_FIELDS:
             out.update(refs(node.get(field)))
-        return out
-    return set()
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -180,8 +189,6 @@ def collect(reader: CrateReader, start_id: str) -> Dict[str, dict]:
 
     cache: Dict[str, dict] = {start_id: start}
     frontier = {start_id}
-    if is_rocrate(start.get("@type", "")):
-        frontier |= {r["@id"] for r in rocrate_outputs(start) if r.get("@id")}
 
     processed: set[str] = set()
     while frontier:
@@ -229,6 +236,7 @@ def _group_node(group_id: str, members: List[str], cache: Dict[str, dict]) -> di
         ),
         "evi:memberCount": len(members),
         "evi:representativeDataset": {"@id": members[0]},
+        "evi:memberIds": list(members),
         "evi:commonFormat": fmt,
         "evi:condensationThreshold": CONDENSE_THRESHOLD,
     }
@@ -285,8 +293,9 @@ def condense(
     """Collapse repetitive sibling datasets, in place.
 
     Two places produce them in practice, and this handles exactly those:
-    a crate that outputs thousands of near-identical files, and a
-    computation that consumes them. Deliberately non-recursive -- the full
+    a crate that outputs thousands of near-identical files (the start
+    crate or any sub-crate it reaches), and a computation that consumes
+    them. Deliberately non-recursive -- the full
     condenser derives provenance signatures over whole subgraphs, which is
     a lot of machinery for a display concern.
     """
@@ -296,18 +305,18 @@ def condense(
     collapsed, groups_before = 0, len([n for n in cache.values()
                                        if "DatasetGroup" in str(n.get("@type"))])
 
-    start = cache.get(start_id)
-    if start and is_rocrate(start.get("@type", "")):
-        outputs = rocrate_outputs(start)
-        if outputs:
-            replaced, n = _condense_refs(outputs, cache, start_id, threshold)
+    for guid, node in list(cache.items()):
+        if "error" in node or not is_rocrate(node.get("@type", "")):
+            continue
+        outputs = rocrate_outputs(node)
+        if not outputs:
+            continue
+        replaced, n = _condense_refs(outputs, cache, guid, threshold)
+        if n:
             collapsed += n
-            if n:
-                start = dict(start)
-                for field in ("https://w3id.org/EVI#outputs", "EVI:outputs", "outputs"):
-                    if field in start:
-                        start[field] = replaced
-                cache[start_id] = start
+            node = dict(node)
+            node[rocrate_outputs_field(node)] = replaced
+            cache[guid] = node
 
     for guid, node in list(cache.items()):
         if "error" in node or not is_activity_like(type_string(node.get("@type", ""))):
@@ -351,10 +360,7 @@ def _expand_used_dataset(value: Any, cache: Dict[str, dict]) -> List[dict]:
     return out
 
 
-def _project_node(
-    node: dict, cache: Dict[str, dict],
-    is_start_rocrate: bool, start_outputs: Optional[List[dict]],
-) -> tuple[dict, List[str]]:
+def _project_node(node: dict, cache: Dict[str, dict]) -> tuple[dict, List[str]]:
     """One node reduced to display fields, plus the ids it points at."""
     built = {
         "@id": node.get("@id"),
@@ -364,10 +370,13 @@ def _project_node(
     }
     if node.get("createdBy"):
         built["createdBy"] = node["createdBy"]
-    if is_start_rocrate and start_outputs:
-        built["hasOutputs"] = start_outputs
-
     follow: List[str] = []
+    if is_rocrate(node.get("@type", "")):
+        listed = rocrate_outputs(node)
+        if listed:
+            built["hasOutputs"] = listed
+            follow.extend(refs(listed))
+
     type_str = type_string(node.get("@type", ""))
 
     if is_entity_like(type_str):
@@ -393,8 +402,8 @@ def _project_node(
 
     if "DatasetGroup" in str(node.get("@type")):
         for field in ("evi:memberCount", "evi:representativeDataset",
-                      "evi:commonFormat", "evi:commonSoftware", "format",
-                      "evi:condensationThreshold"):
+                      "evi:memberIds", "evi:commonFormat", "evi:commonSoftware",
+                      "format", "evi:condensationThreshold"):
             if field in node:
                 built[field] = node[field]
         representative = node.get("evi:representativeDataset")
@@ -402,6 +411,10 @@ def _project_node(
                   else representative)
         if rep_id:
             follow.append(rep_id)
+        # Members ride along in @graph so the viewer can reveal them on
+        # click; it starts from the outputs, so they stay hidden until then.
+        follow.extend(m for m in node.get("evi:memberIds") or []
+                      if isinstance(m, str))
 
     return built, follow
 
@@ -421,10 +434,8 @@ def project(
                 [{"@id": start_id}])
 
     outputs: List[dict] = []
-    start_rocrate_outputs: Optional[List[dict]] = None
     if is_rocrate(start.get("@type", "")):
-        start_rocrate_outputs = list(rocrate_outputs(start))
-        for ref in start_rocrate_outputs + [{"@id": start_id}]:
+        for ref in list(rocrate_outputs(start)) + [{"@id": start_id}]:
             if isinstance(ref, dict) and ref.get("@id"):
                 outputs.append({"@id": ref["@id"]})
     else:
@@ -444,11 +455,7 @@ def project(
             graph[guid] = node
             continue
         graph[guid] = {}                      # claim before expanding
-        built, follow = _project_node(
-            node, cache,
-            is_start_rocrate=(guid == start_id and start_rocrate_outputs is not None),
-            start_outputs=start_rocrate_outputs,
-        )
+        built, follow = _project_node(node, cache)
         graph[guid] = built
         queue.extend(follow)
 

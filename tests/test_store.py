@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -295,3 +296,33 @@ def test_edges_may_dangle(con, tmp_path):
         "SELECT COUNT(*) FROM edge WHERE object = 'ark:99999/elsewhere'"
     ).fetchone()[0] == 1
     assert db.resolve(con, "ark:99999/elsewhere") is None
+
+
+def test_ingest_tree_survives_a_malformed_crate(con, tmp_path):
+    """One bad file must not abort the walk or lose its neighbours."""
+    write_crate(tmp_path / "a-good", "ark:99999/good-a")
+    (tmp_path / "b-bad").mkdir()
+    (tmp_path / "b-bad" / "ro-crate-metadata.json").write_text("{ not json")
+    (tmp_path / "c-notacrate").mkdir()
+    (tmp_path / "c-notacrate" / "ro-crate-metadata.json").write_text('{"@graph": []}')
+    write_crate(tmp_path / "d-good", "ark:99999/good-d")
+
+    results = db.ingest_tree(con, tmp_path)
+
+    assert [r.crate for r in results if not r.error] == ["ark:99999/good-a", "ark:99999/good-d"]
+    errors = {Path(r.path).parent.name: r.error for r in results if r.error}
+    assert set(errors) == {"b-bad", "c-notacrate"}
+    assert "not valid JSON" in errors["b-bad"]
+    assert "no RO-Crate root" in errors["c-notacrate"]
+    assert {c.id for c in db.list_crates(con)} == {"ark:99999/good-a", "ark:99999/good-d"}
+
+
+def test_ingest_tree_applies_the_validator(con, tmp_path):
+    write_crate(tmp_path / "x", "ark:99999/x")
+
+    def reject(data):
+        raise ValueError("rejected by validator")
+
+    results = db.ingest_tree(con, tmp_path, validate=reject)
+    assert [r.error for r in results] == ["rejected by validator"]
+    assert db.list_crates(con) == []

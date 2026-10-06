@@ -14,10 +14,11 @@ dependencies = [
     "uvicorn",
     "pydantic>=2",
     "fairscape-models",
+    "python-multipart",   # FastAPI multipart uploads (POST /rocrate/upload)
 ]
 
 [project.optional-dependencies]
-test = ["pytest", "httpx", "fairscape-graph-tools"]
+test = ["pytest", "httpx"]
 
 [project.urls]
 Homepage = "https://github.com/fairscape/fairscape_lite"

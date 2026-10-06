@@ -15,6 +15,7 @@ import { HeroSection } from "../components/shared/DirectionA";
 import LoadingSpinner from "../components/common/LoadingSpinner";
 import { PageBody } from "../components/Layout";
 import { listCrates, listEntities, CrateSummary } from "../api";
+import { viewPath } from "../links";
 
 const HeroInner = styled.div`
   max-width: 1280px;
@@ -130,8 +131,8 @@ const DashboardPage = () => {
         {rows !== null && rows.length === 0 && (
           <Empty>
             Nothing registered yet. Index a crate with{" "}
-            <code>POST /rocrate {"{"}"path": "…"{"}"}</code> and it will appear
-            here.
+            <code>POST /rocrate {"{"}"path": "…"{"}"}</code>, or upload a zip
+            with <code>POST /rocrate/upload</code>, and it will appear here.
           </Empty>
         )}
         {rows !== null && rows.length > 0 && (
@@ -149,7 +150,7 @@ const DashboardPage = () => {
               {rows.map((row) => (
                 <Tr key={row.id}>
                   <Td>
-                    <NameLink to={`/view/${row.id}`}>
+                    <NameLink to={viewPath(row.id)}>
                       {row.name ?? row.id}
                     </NameLink>
                     {row.description && (

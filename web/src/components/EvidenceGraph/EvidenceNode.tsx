@@ -6,6 +6,7 @@ import "tippy.js/themes/light.css";
 import { EvidenceNodeData } from "../../types/graph";
 import {
   formatPropertyValue,
+  formatIdLink,
   getDisplayableProperties,
 } from "./utils/graphUtils";
 import styled from "styled-components"; // Ensure styled-components is imported
@@ -226,7 +227,7 @@ const EvidenceNode: React.FC<NodeProps<EvidenceNodeData>> = ({
             {/* Using id from data, which comes from _sourceData["@id"] */}
             <span
               className="prop-value"
-              dangerouslySetInnerHTML={{ __html: formatPropertyValue(data.id) }}
+              dangerouslySetInnerHTML={{ __html: formatIdLink(data.id) }}
             ></span>
           </div>
           <div className="prop-item">

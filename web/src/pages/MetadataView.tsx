@@ -10,6 +10,7 @@ import {
   DefTerm,
   DefValue,
 } from "../components/shared/DirectionA";
+import { viewPath } from "../links";
 
 const RefLink = styled(Link)`
   font-family: ${({ theme }) => theme.fonts.mono};
@@ -78,7 +79,7 @@ const Value = ({ value }: { value: any }) => {
   if (value === null || value === undefined) return <>—</>;
   if (isRef(value)) {
     const id = value["@id"];
-    return <RefLink to={`/view/${id}`}>{id}</RefLink>;
+    return <RefLink to={viewPath(id)}>{id}</RefLink>;
   }
   if (typeof value === "string") {
     if (/^https?:\/\//.test(value))

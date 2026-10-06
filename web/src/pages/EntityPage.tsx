@@ -24,6 +24,7 @@ import {
   EntitySummary,
 } from "../api";
 import { RawGraphData } from "../types/graph";
+import { viewPath } from "../links";
 
 const TitleRow = styled.div`
   display: flex;
@@ -217,7 +218,7 @@ const ContentsSection = ({ crateId }: { crateId: string }) => {
           {shown.map((e) => (
             <Tr key={e.id}>
               <Td>
-                <NameLink to={`/view/${e.id}`}>{e.name ?? e.id}</NameLink>
+                <NameLink to={viewPath(e.id)}>{e.name ?? e.id}</NameLink>
               </Td>
               <Td>
                 <TdMono>{e.type}</TdMono>
@@ -234,7 +235,9 @@ const ContentsSection = ({ crateId }: { crateId: string }) => {
 };
 
 const EntityPage = () => {
-  const id = decodeURI(useParams()["*"] ?? "");
+  // The router has already decoded the param; decoding again would
+  // corrupt ids that contain an escaped `%`.
+  const id = useParams()["*"] ?? "";
   const [params, setParams] = useSearchParams();
   const tab: TabKey = (TABS as readonly string[]).includes(
     params.get("tab") ?? "",
@@ -301,7 +304,7 @@ const EntityPage = () => {
         {fromCrate && (
           <span>
             <Mono>from crate </Mono>
-            <CrateLink to={`/view/${fromCrate}`}>{fromCrate}</CrateLink>
+            <CrateLink to={viewPath(fromCrate)}>{fromCrate}</CrateLink>
           </span>
         )}
       </IdRow>

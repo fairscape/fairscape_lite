@@ -10,6 +10,7 @@ import {
 import LoadingSpinner from "../components/common/LoadingSpinner";
 import { PageBody } from "../components/Layout";
 import { search, EntitySummary } from "../api";
+import { viewPath } from "../links";
 
 const SearchForm = styled.form`
   display: flex;
@@ -123,7 +124,7 @@ const SearchPage = () => {
           </Summary>
           {results.map((r) => (
             <ResultCard key={r.id}>
-              <ResultTitle to={`/view/${r.id}`}>{r.name ?? r.id}</ResultTitle>
+              <ResultTitle to={viewPath(r.id)}>{r.name ?? r.id}</ResultTitle>
               <TypeTag>{r.type}</TypeTag>
               {r.description && (
                 <ResultDescription>{truncate(r.description)}</ResultDescription>

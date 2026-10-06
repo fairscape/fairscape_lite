@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { GraphDataService } from "./hooks/GraphDataService";
 import { RawGraphEntity } from "../../types/graph";
 import { findRootEntity } from "./utils/findRootEntity";
+import { viewPath } from "../../links";
 
 const Container = styled.div`
   margin-top: ${({ theme }) => theme.spacing.lg};
@@ -487,7 +488,7 @@ const SupportingElementsComponent: React.FC<
                           <TableRow key={el["@id"]}>
                             <TableCell>
                               <StyledLink
-                                to={`/view/${extractArkIdentifier(el["@id"])}`}
+                                to={viewPath(extractArkIdentifier(el["@id"]))}
                               >
                                 {getHighlightedText(
                                   el.name || el["@id"],

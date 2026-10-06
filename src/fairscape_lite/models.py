@@ -165,6 +165,7 @@ class IngestStats(BaseModel):
     entities_kept: int = 0          # seen, but another crate owns them
     entities_dropped: int = 0       # gone from this crate since last ingest
     edges: int = 0
+    error: Optional[str] = None     # why this file was not indexed (tree walks)
 
     def count(self, key: str, n: int = 1) -> None:
         setattr(self, key, getattr(self, key) + n)

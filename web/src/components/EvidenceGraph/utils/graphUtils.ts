@@ -5,12 +5,23 @@ import {
   EvidenceEdge,
 } from "../../../types/graph";
 import { GraphDataService } from "../hooks/GraphDataService";
+import { viewPath } from "../../../links";
 
 const MAX_LABEL_LENGTH = 50;
 const COLLECTION_THRESHOLD = 5;
 // BASE_URL is "/ui/" in both dev and the built app, so tooltip links land
 // on the router's basename instead of the API root.
-const feUrl = window.location.origin + import.meta.env.BASE_URL + "view/";
+const uiBase =
+  window.location.origin + import.meta.env.BASE_URL.replace(/\/$/, "");
+
+const escapeHtml = (text: string) =>
+  text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** A viewer link for any @id -- ARK or not. */
+export function formatIdLink(id: string): string {
+  const href = escapeHtml(uiBase + viewPath(id));
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(id)}</a>`;
+}
 
 export function getEntityType(typeUri: string | string[] | undefined): string {
   if (!typeUri) return "Unknown";
@@ -52,8 +63,7 @@ export function formatPropertyValue(value: any, propKey?: string): string {
 
   if (typeof value === "string") {
     if (value.startsWith("ark:")) {
-      const fullUrl = `${feUrl}${value}`;
-      return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer">${value}</a>`;
+      return formatIdLink(value);
     }
 
     const urlRegex = /^(https?:\/\/\S+)$/;
@@ -73,8 +83,12 @@ export function formatPropertyValue(value: any, propKey?: string): string {
   }
 
   if (typeof value === "object" && value !== null) {
-    if (value["@id"]) {
-      return formatPropertyValue(value["@id"]);
+    // A reference is an @id whatever its scheme; web URLs still open
+    // externally, everything else (UUIDs, file:///, doi:) in the viewer.
+    if (typeof value["@id"] === "string") {
+      return /^https?:\/\//.test(value["@id"])
+        ? formatPropertyValue(value["@id"])
+        : formatIdLink(value["@id"]);
     }
     try {
       return `<pre>${JSON.stringify(value, null, 2)}</pre>`;
@@ -103,6 +117,7 @@ export function getDisplayableProperties(
     "usedInstrument",
     "usedMLModel",
     "hasOutputs",
+    "evi:memberIds",
     "createdBy",
     "name",
     "label",
@@ -157,7 +172,7 @@ export function createEvidenceNode(
     if (Array.isArray(memberIds)) {
       // Filter out summary strings like "... and N more (total: M)"
       properties._childNodeIds = memberIds.filter(
-        (id: any) => typeof id === "string" && id.startsWith("ark:"),
+        (id: any) => typeof id === "string" && !id.startsWith("... "),
       );
       properties._visibleChildren = 0;
     }
