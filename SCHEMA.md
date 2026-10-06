@@ -183,27 +183,32 @@ needed them.
 
 ## Evidence graphs
 
-Built at read time by `graph.py`; on the old server this was a Celery task
-that wrote its result back as an identifier and was polled for. Three
-steps: `collect` (iterative BFS backward through `generatedBy` / `used*`),
+Built at read time by `graph.py`, with no dependency on
+`fairscape_graph_tools`; on the old server this was a Celery task that
+wrote its result back as an identifier and was polled for. Three steps:
+`collect` (iterative BFS backward through `generatedBy` / `used*`),
 `condense`, `project`.
 
-`tests/test_graph.py` asserts **byte-identical parity** with
-`fairscape_graph_tools.EvidenceGraphBuilder` over the same store, with
-condensation disabled on both sides — 41 nodes including a full 18k-node
-crate root.
+Any RO-Crate the walk reaches -- the start node or a sub-crate under it --
+also contributes what it lists, read from the first non-empty of
+`EVI:Outputs`, `EVI:outputs` (each also as the full IRI and bare name)
+and `hasPart`. So a release crate opens into its sub-crates and their
+outputs, and appears in the graph with a `hasOutputs` edge to each.
 
-Condensation is deliberately *not* compared, because it is deliberately
-simpler: sibling datasets **inside one reference list** sharing a format
-and a generating computation collapse into a `DatasetGroup` above
-threshold 5. No recursive provenance signatures. Members stay in the cache
-but nothing points at them, so projection never reaches them. Pass
+Condensation is deliberately simple: sibling datasets **inside one
+reference list** (a crate's listing or a computation's `usedDataset`)
+sharing a format and a generating computation collapse into a
+`DatasetGroup` above threshold 5. No recursive provenance signatures. The
+group carries every member in `evi:memberIds`, and the members are
+projected into `@graph` too so the viewer can reveal them one per click;
+it starts from `outputs`, so they stay hidden until asked for. Pass
 `?condense=0` to disable.
 
-Both traversal and projection are iterative. The real builder's projection
-recurses and will overflow on a long chain — and loops forever on a
-provenance cycle, since it recurses before claiming the node. `project()`
-claims first (`test_projection_survives_a_provenance_cycle`).
+Both traversal and projection are iterative, so a long chain cannot
+overflow the stack, and `project()` claims a node before expanding it so
+a provenance cycle cannot loop (`test_projection_survives_a_provenance_cycle`).
+`test_every_reference_in_a_graph_is_projected` checks, across the
+fixtures, that nothing a node points at is missing from `@graph`.
 
 ## Limitations, with numbers
 
@@ -278,6 +283,6 @@ src/fairscape_lite/
   graph.py     collect -> condense -> project
   app.py       the twelve endpoints, plus serving web/dist under /ui/
 scripts/bench.py   full-corpus ingest and read timings
-tests/             85 tests, incl. parity vs fairscape_graph_tools
+tests/             pytest suite (pip install -e ".[test]")
 web/               the view-only UI (React); builds to web/dist
 ```

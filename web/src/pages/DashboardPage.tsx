@@ -15,6 +15,7 @@ import { HeroSection } from "../components/shared/DirectionA";
 import LoadingSpinner from "../components/common/LoadingSpinner";
 import { PageBody } from "../components/Layout";
 import { listCrates, listEntities, CrateSummary } from "../api";
+import { viewPath } from "../links";
 
 const HeroInner = styled.div`
   max-width: 1280px;
@@ -149,7 +150,7 @@ const DashboardPage = () => {
               {rows.map((row) => (
                 <Tr key={row.id}>
                   <Td>
-                    <NameLink to={`/view/${row.id}`}>
+                    <NameLink to={viewPath(row.id)}>
                       {row.name ?? row.id}
                     </NameLink>
                     {row.description && (
