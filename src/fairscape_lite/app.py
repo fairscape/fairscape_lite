@@ -1,4 +1,4 @@
-"""The whole HTTP surface: sixteen endpoints over a SQLite index.
+"""The whole HTTP surface: seventeen endpoints over a SQLite index.
 
 Deployment posture -- read this before exposing the port
 --------------------------------------------------------
@@ -86,6 +86,7 @@ def envelope(con: sqlite3.Connection, entity) -> dict:
         metadataType=entity.type_list,
         metadata=node,
         sourceCrate=entity.source_crate,
+        labels=db.labels(con, db.node_refs(node)),
     ).dump()
 
 
@@ -151,6 +152,10 @@ def register(body: Registration, con=Depends(connection)):
 def upload_crate(
     file: UploadFile = File(description="a .zip of the crate directory, or a bare "
                                         "ro-crate-metadata.json"),
+    require_subcrates: bool = Query(
+        default=False,
+        description="refuse (409) a crate whose hasPart lists sub-crates "
+                    "that are neither registered nor inside the upload"),
     con=Depends(connection),
 ):
     """Receive a crate the client has no shared path for, then index it.
@@ -170,10 +175,22 @@ def upload_crate(
 
     Always re-indexes (unpacked files have fresh mtimes), so this is
     also how a peer updates a crate: upload it again.
+
+    A release that rolls up sub-crates should go last: its sub-crates
+    then own their own entities. `require_subcrates=true` enforces that
+    order; either way the response lists sub-crates still missing.
     """
     source = uploads.spool(file.file)
     try:
         try:
+            data, nested = uploads.peek(source)
+            missing = _missing_subcrates(con, data, nested)
+            if require_subcrates and missing:
+                raise HTTPException(409, {
+                    "message": f"{len(missing)} sub-crate(s) listed in hasPart are "
+                               "not uploaded yet; upload them first",
+                    "missing": missing,
+                })
             unpacked = uploads.receive(
                 source, validate=validate_crate,
                 existing=_registered_path(con, source),
@@ -199,7 +216,27 @@ def upload_crate(
         "files": uploads.file_report(
             uploads.local_files(unpacked.data, unpacked.metadata.parent)),
         "registered": [s.model_dump() for s in registered],
+        "subcrates": {
+            "declared": len(db.declared_subcrates(unpacked.data)),
+            "missing": _missing_subcrates(con, unpacked.data, set()),
+        },
     }
+
+
+def _missing_subcrates(con, data: dict, nested: set[str]) -> list[dict]:
+    """Sub-crates `data` declares that are neither registered nor in `nested`.
+
+    A crate with no findable root declares none; `receive` rejects it
+    with the proper validation message.
+    """
+    try:
+        declared = db.declared_subcrates(data)
+    except ValueError:
+        return []
+    return [
+        s for s in declared
+        if s["@id"] not in nested and db.crate_path(con, s["@id"]) is None
+    ]
 
 
 def _registered_path(con, source: Path) -> Optional[Path]:
@@ -281,6 +318,16 @@ def crate_file(
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     return FileResponse(target, filename=target.name)
+
+
+@app.get("/rocrate/subcrates")
+def crate_subcrates(
+    id: str = Query(description="the crate root's @id"),
+    con=Depends(connection),
+):
+    """The crates this crate's root lists in hasPart, and which are registered."""
+    entity = must_resolve(con, id)
+    return {"crate": entity.id, "subcrates": db.subcrates(con, entity.id)}
 
 
 @app.get("/rocrate/stale")

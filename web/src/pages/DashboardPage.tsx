@@ -19,6 +19,8 @@ import {
   listEntities,
   uploadCrate,
   CrateSummary,
+  SubcrateRef,
+  UploadError,
   UploadResult,
 } from "../api";
 import { viewPath } from "../links";
@@ -107,23 +109,43 @@ const UploadNote = styled.span<{ $error?: boolean }>`
     $error ? theme.colors.danger : theme.colors.ink2};
 `;
 
-/** Pick a crate zip (or a bare ro-crate-metadata.json) and POST it. */
+const MissingList = styled.ul`
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: ${({ theme }) => theme.colors.ink2};
+`;
+
+const names = (refs: SubcrateRef[]) => refs.map((m) => m.name ?? m["@id"]);
+
+/** Pick a crate zip (or a bare ro-crate-metadata.json) and POST it.
+ *
+ * A release that lists sub-crates is held back until they are uploaded
+ * (the server answers 409 with the missing ones); "Upload anyway" sends
+ * it regardless.
+ */
 const UploadPanel = ({ onUploaded }: { onUploaded: () => void }) => {
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [held, setHeld] = useState<{ file: File; missing: SubcrateRef[] } | null>(null);
 
-  const send = (file: File) => {
+  const send = (file: File, requireSubcrates = true) => {
     setBusy(true);
     setResult(null);
     setError(null);
-    uploadCrate(file)
+    setHeld(null);
+    uploadCrate(file, requireSubcrates)
       .then((r) => {
         setResult(r);
         onUploaded();
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        if (e instanceof UploadError && e.missing.length)
+          setHeld({ file, missing: e.missing });
+        else setError(e.message);
+      })
       .finally(() => {
         setBusy(false);
         if (input.current) input.current.value = "";
@@ -142,18 +164,42 @@ const UploadPanel = ({ onUploaded }: { onUploaded: () => void }) => {
       <SecondaryButton disabled={busy} onClick={() => input.current?.click()}>
         {busy ? "Uploading…" : "Upload crate"}
       </SecondaryButton>
-      {!result && !error && (
+      {!result && !error && !held && (
         <UploadNote>
           A .zip of the crate folder (ro-crate-metadata.json plus the files it
           points to), or a bare ro-crate-metadata.json.
         </UploadNote>
       )}
       {error && <UploadNote $error>Upload failed: {error}</UploadNote>}
+      {held && (
+        <div style={{ flexBasis: "100%" }}>
+          <UploadNote $error>
+            {held.file.name} lists {held.missing.length} sub-crate
+            {held.missing.length === 1 ? "" : "s"} that are not uploaded yet.
+            Upload them first so they keep their own contents, then upload this
+            one last.
+          </UploadNote>
+          <MissingList>
+            {names(held.missing).map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </MissingList>
+          <SecondaryButton
+            style={{ marginTop: 10, padding: "7px 14px", fontSize: 13 }}
+            disabled={busy}
+            onClick={() => send(held.file, false)}
+          >
+            Upload anyway
+          </SecondaryButton>
+        </div>
+      )}
       {result && (
         <UploadNote>
           Registered <NameLink to={viewPath(result.crate)}>{result.crate}</NameLink>
           {result.files.local > 0 &&
             ` · ${result.files.found} of ${result.files.local} local files found`}
+          {result.subcrates.declared > 0 &&
+            ` · ${result.subcrates.declared - result.subcrates.missing.length} of ${result.subcrates.declared} sub-crates present`}
           {result.files.missing.length > 0 &&
             ` (missing: ${result.files.missing
               .slice(0, 3)

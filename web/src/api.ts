@@ -18,12 +18,16 @@ export interface EntitySummary {
   source_crate: string;
 }
 
+/** {@id: {name, type}} for indexed entities a node references. */
+export type Labels = Record<string, { name: string | null; type: string }>;
+
 /** The resolver envelope: what /ark:..., /identifier and /evidencegraph return. */
 export interface Envelope {
   "@id": string;
   "@type": string | string[];
   metadata: Record<string, any>;
   sourceCrate: string | null;
+  labels?: Labels;
 }
 
 async function get<T>(url: string): Promise<T> {
@@ -87,9 +91,26 @@ export interface LocalFile {
   exists: boolean;
 }
 
+export interface SubcrateRef {
+  "@id": string;
+  name: string | null;
+}
+
+export interface Subcrate extends SubcrateRef {
+  description: string | null;
+  registered: boolean;
+  entities: number;
+}
+
+export const subcrates = (crateId: string) =>
+  get<{ subcrates: Subcrate[] }>(
+    `/rocrate/subcrates?id=${encodeURIComponent(crateId)}`,
+  ).then((r) => r.subcrates);
+
 export interface UploadResult {
   crate: string;
   kind: "zip" | "metadata";
+  subcrates: { declared: number; missing: SubcrateRef[] };
   files: {
     local: number;
     found: number;
@@ -107,18 +128,35 @@ export const crateFiles = (crateId: string) =>
     `/rocrate/files?id=${encodeURIComponent(crateId)}`,
   ).then((r) => r.files);
 
-export async function uploadCrate(file: File): Promise<UploadResult> {
+/** A refused upload; `missing` is set when sub-crates must go first (409). */
+export class UploadError extends Error {
+  missing: SubcrateRef[];
+  constructor(message: string, missing: SubcrateRef[] = []) {
+    super(message);
+    this.missing = missing;
+  }
+}
+
+export async function uploadCrate(
+  file: File,
+  requireSubcrates = true,
+): Promise<UploadResult> {
   const body = new FormData();
   body.append("file", file);
-  const res = await fetch("/rocrate/upload", { method: "POST", body });
+  const res = await fetch(
+    `/rocrate/upload?require_subcrates=${requireSubcrates}`,
+    { method: "POST", body },
+  );
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: any = res.statusText;
     try {
       detail = (await res.json()).detail ?? detail;
     } catch {
       /* non-JSON error body */
     }
-    throw new Error(detail);
+    if (typeof detail === "object" && detail?.missing)
+      throw new UploadError(detail.message, detail.missing);
+    throw new UploadError(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return res.json();
 }

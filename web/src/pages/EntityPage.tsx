@@ -22,6 +22,8 @@ import {
   listEntities,
   crateFiles,
   fileUrl,
+  subcrates as fetchSubcrates,
+  Subcrate,
   Envelope,
   EntitySummary,
   LocalFile,
@@ -239,6 +241,81 @@ const FilesSection = ({ files }: { files: LocalFile[] }) => (
   </>
 );
 
+const SubBlurb = styled.p`
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: ${({ theme }) => theme.colors.ink2};
+`;
+
+const Status = styled.span<{ $ok: boolean }>`
+  font-family: ${({ theme }) => theme.fonts.mono};
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: ${({ theme, $ok }) => ($ok ? theme.colors.success : theme.colors.ink3)};
+`;
+
+const NumTd = styled(Td)`
+  text-align: right;
+  font-family: ${({ theme }) => theme.fonts.mono};
+  font-size: 12.5px;
+  white-space: nowrap;
+`;
+
+const clip = (text: string | null, n = 180) =>
+  text && text.length > n ? `${text.slice(0, n).trimEnd()}…` : text;
+
+/** The crates this crate rolls up (its hasPart ROCrates), uploaded or not. */
+const SubcratesSection = ({ crateId }: { crateId: string }) => {
+  const [rows, setRows] = useState<Subcrate[] | null>(null);
+
+  useEffect(() => {
+    setRows(null);
+    fetchSubcrates(crateId)
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, [crateId]);
+
+  if (!rows?.length) return null;
+  const present = rows.filter((r) => r.registered).length;
+
+  return (
+    <div style={{ marginBottom: 40 }}>
+      <SectionHeader
+        index={`${present}/${rows.length}`}
+        title="Sub-crates"
+      />
+      <Table>
+        <thead>
+          <tr>
+            <Th style={{ width: "62%" }}>Name</Th>
+            <Th style={{ textAlign: "right" }}>Entities</Th>
+            <Th>Status</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <Tr key={r["@id"]}>
+              <Td>
+                <NameLink to={viewPath(r["@id"])}>{r.name ?? r["@id"]}</NameLink>
+                {r.description && <SubBlurb>{clip(r.description)}</SubBlurb>}
+              </Td>
+              <NumTd>{r.registered ? r.entities.toLocaleString() : "—"}</NumTd>
+              <Td>
+                <Status $ok={r.registered}>
+                  {r.registered ? "Uploaded" : "Not uploaded"}
+                </Status>
+              </Td>
+            </Tr>
+          ))}
+        </tbody>
+      </Table>
+    </div>
+  );
+};
+
 const ContentsSection = ({
   crateId,
   files,
@@ -446,9 +523,14 @@ const EntityPage = () => {
 
       {tab === "metadata" && (
         <>
+          {isCrate && <SubcratesSection crateId={envelope["@id"]} />}
           {ownFiles.length > 0 && <FilesSection files={ownFiles} />}
           <SectionHeader title="Properties" />
-          <MetadataView metadata={meta} fileLinks={fileLinks} />
+          <MetadataView
+            metadata={meta}
+            fileLinks={fileLinks}
+            labels={envelope.labels}
+          />
           {isCrate && (
             <ContentsSection crateId={envelope["@id"]} files={files} />
           )}

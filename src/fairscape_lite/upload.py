@@ -294,6 +294,28 @@ def _parse(raw: bytes, label: str) -> dict:
     return data
 
 
+def peek(source: Path) -> tuple[dict, set[str]]:
+    """The root metadata an upload carries, and the roots of crates nested in it.
+
+    Reads only; nothing is written. Lets the caller check an upload
+    (are its sub-crates here yet?) before `receive` replaces anything.
+    """
+    if not zipfile.is_zipfile(source):
+        return _parse(source.read_bytes(), "upload"), set()
+    with zipfile.ZipFile(source) as archive:
+        member = find_root_member(archive)
+        data = _parse(archive.read(member), member)
+        nested = set()
+        for name in archive.namelist():
+            if (name != member and not _is_junk(name)
+                    and PurePosixPath(name).name == METADATA_FILENAME):
+                try:
+                    nested.add(db.find_root(_parse(archive.read(name), name))[1])
+                except ValueError:      # BadUpload is one; skip, ingest reports it
+                    pass
+    return data, nested
+
+
 def _root_id(data: dict, validate: Optional[Callable[[dict], None]]) -> str:
     if validate is not None:
         validate(data)          # pydantic ValidationError is a ValueError

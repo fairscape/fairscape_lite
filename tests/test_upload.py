@@ -410,3 +410,77 @@ def test_file_endpoint_refuses_symlinks_out_of_the_crate(client, tmp_path):
     (tmp_path / "c" / "data" / "link.txt").symlink_to(tmp_path / "secret.txt")
     client.post("/rocrate", json={"path": str(path)})
     assert client.get("/rocrate/file", params={"id": "ark:99999/linked"}).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# Releases that roll up sub-crates
+# --------------------------------------------------------------------------
+
+SUB = "ark:99999/rocrate-sub"
+PERSON = "https://orcid.org/0000-0000-0000-0001"
+
+
+def release_zip(tmp_path):
+    stub = {"@id": SUB, "@type": ["Dataset", "https://w3id.org/EVI#ROCrate"],
+            "name": "the sub-crate", "description": "a rolled-up sub-crate",
+            "keywords": ["test"], "version": "1.0", "author": "Test Suite",
+            "license": "https://opensource.org/licenses/MIT", "hasPart": []}
+    person = {"@id": PERSON, "@type": "Person", "name": "Doe, J"}
+    zipped = build_zip(tmp_path, nodes=[stub, person], files={}, wrapper="release")
+    # the root lists the person as author too, by reference only
+    with zipfile.ZipFile(zipped) as zf:
+        data = json.loads(zf.read("release/ro-crate-metadata.json"))
+    root = next(n for n in data["@graph"] if n["@id"] == ROOT)
+    root["author"] = [{"@id": PERSON}, "Plain Name"]
+    out = tmp_path / "release.zip"
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("release/ro-crate-metadata.json", json.dumps(data))
+    return out
+
+
+def sub_zip(tmp_path):
+    return build_zip(tmp_path / "sub", root_id=SUB, wrapper="sub")
+
+
+def test_release_reports_and_can_refuse_missing_subcrates(client, tmp_path):
+    archive = release_zip(tmp_path)
+    refused = post_with(client, archive, require_subcrates="true")
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["missing"] == [{"@id": SUB, "name": "the sub-crate"}]
+    assert client.get("/rocrate").json()["crates"] == []      # nothing written
+
+    body = post(client, archive).json()                        # allowed by default
+    assert body["subcrates"] == {"declared": 1, "missing": [{"@id": SUB, "name": "the sub-crate"}]}
+
+
+def test_release_uploaded_last_lists_its_subcrates(client, tmp_path):
+    post(client, sub_zip(tmp_path))
+    res = post_with(client, release_zip(tmp_path), require_subcrates="true")
+    assert res.status_code == 200
+    assert res.json()["subcrates"] == {"declared": 1, "missing": []}
+
+    (sub,) = client.get("/rocrate/subcrates", params={"id": ROOT}).json()["subcrates"]
+    assert sub["@id"] == SUB and sub["registered"] is True and sub["entities"] == 2
+    # the sub-crate keeps its own root, so it is not in the release's own rows
+    owned = {e["id"] for e in client.get("/entity", params={"crate": ROOT}).json()["entities"]}
+    assert SUB not in owned
+
+
+def test_subcrates_listed_but_unregistered(client, tmp_path):
+    post(client, release_zip(tmp_path))
+    (sub,) = client.get("/rocrate/subcrates", params={"id": ROOT}).json()["subcrates"]
+    assert sub == {"@id": SUB, "name": "the sub-crate", "description": "a rolled-up sub-crate",
+                   "registered": False, "entities": 0}
+
+
+def test_envelope_labels_referenced_ids(client, tmp_path):
+    post(client, release_zip(tmp_path))
+    labels = client.get(f"/{ROOT}").json()["labels"]
+    assert labels[PERSON] == {"name": "Doe, J", "type": "Person"}
+    assert labels[SUB]["type"] == "ROCrate"
+
+
+def post_with(client, path, **params):
+    with open(path, "rb") as handle:
+        return client.post("/rocrate/upload", params=params,
+                           files={"file": (path.name, handle)})

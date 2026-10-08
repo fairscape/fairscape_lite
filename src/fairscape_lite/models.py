@@ -189,6 +189,9 @@ class Identifier(BaseModel):
     metadataType: Any = Field(alias="@type")   # verbatim: string or list
     metadata: dict
     sourceCrate: Optional[str] = None
+    # {@id: {name, type}} for indexed entities the node references, so a
+    # client can show names instead of bare ids. Empty on graph envelopes.
+    labels: dict = Field(default_factory=dict)
 
     def dump(self) -> dict:
         return self.model_dump(by_alias=True)

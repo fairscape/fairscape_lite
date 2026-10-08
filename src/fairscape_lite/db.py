@@ -252,6 +252,24 @@ def find_root(data: dict) -> tuple[Optional[dict], str, dict]:
     return descriptor, root_id, by_id[root_id]
 
 
+def declared_subcrates(data: dict) -> list[dict]:
+    """The sub-crates a crate's root lists in `hasPart`.
+
+    A sub-crate is a hasPart target whose node in this same @graph is
+    ROCrate-typed -- the stub a release writes for each crate it rolls
+    up. Read from the file, not the index, so an upload can be checked
+    before anything is written.
+    """
+    _, root_id, root = find_root(data)
+    by_id = {n.get("@id"): n for n in data.get("@graph") or [] if isinstance(n, dict)}
+    out = []
+    for ref in _id_refs(root.get("hasPart")):
+        node = by_id.get(ref)
+        if ref != root_id and node and normalize_type(node.get("@type")) == "ROCrate":
+            out.append({"@id": ref, "name": _first_str(node, "name")})
+    return out
+
+
 def _indexable_nodes(data: dict, descriptor: Optional[dict]) -> Iterator[dict]:
     """Every @graph node that becomes an entity row.
 
@@ -578,6 +596,53 @@ def metadata(con: sqlite3.Connection, entity: Entity) -> Optional[dict]:
         if isinstance(node, dict) and node.get("@id") == entity.id:
             return node
     return None
+
+
+def subcrates(con: sqlite3.Connection, crate_id: str) -> list[dict]:
+    """ROCrate entities this crate's root links to by hasPart, in order.
+
+    Each sub-crate's own root wins its row (collision rule 1), so a
+    parent's Contents -- rows the parent owns -- never lists them. This
+    is how the parent finds them instead, registered or not.
+    """
+    rows = con.execute(
+        "SELECT e.id, e.name, e.description, c.id IS NOT NULL AS registered, "
+        "(SELECT COUNT(*) FROM entity x WHERE x.source_crate = e.id) AS entities "
+        "FROM edge g JOIN entity e ON e.id = g.object "
+        "LEFT JOIN crate c ON c.id = e.id "
+        "WHERE g.subject = ? AND g.predicate = 'hasPart' "
+        "AND e.fairscape_type = 'ROCrate' AND e.id != ? ORDER BY g.position",
+        (crate_id, crate_id),
+    ).fetchall()
+    return [
+        {"@id": r["id"], "name": r["name"], "description": r["description"],
+         "registered": bool(r["registered"]),
+         "entities": r["entities"] if r["registered"] else 0}
+        for r in rows
+    ]
+
+
+def labels(con: sqlite3.Connection, ids: Iterable[str], limit: int = 2000) -> dict:
+    """{@id: {name, type}} for the indexed ones among `ids`.
+
+    What lets a page show "Clark, T" for an ORCID reference. Capped:
+    an image crate's hasPart alone runs to 17k ids.
+    """
+    wanted = list(dict.fromkeys(ids))[:limit]
+    out = {}
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        for r in con.execute(
+            f"SELECT id, name, fairscape_type FROM entity WHERE id IN ({marks})", chunk
+        ):
+            out[r["id"]] = {"name": r["name"], "type": r["fairscape_type"]}
+    return out
+
+
+def node_refs(node: dict) -> list[str]:
+    """Every @id a node points at from its top-level fields."""
+    return [ref for key, value in node.items() if key != "@id" for ref in _id_refs(value)]
 
 
 def crate_json(con: sqlite3.Connection, crate_id: str) -> dict:
