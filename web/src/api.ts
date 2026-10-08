@@ -1,4 +1,4 @@
-// The whole client for fairscape_lite's HTTP surface (read endpoints only).
+// The whole client for fairscape_lite's HTTP surface (reads, plus crate upload).
 // Served from the same origin as the API, so every path is relative; in dev
 // the vite proxy forwards these prefixes to uvicorn on :8000.
 
@@ -75,3 +75,50 @@ export const search = (q: string, limit = 100) =>
   get<{ query: string; results: EntitySummary[] }>(
     `/search?q=${encodeURIComponent(q)}&limit=${limit}`,
   ).then((r) => r.results);
+
+// ---- Crate files: upload a zip, fetch what it unpacked ---------------------
+
+export interface LocalFile {
+  "@id": string;
+  n: number;
+  name: string | null;
+  contentUrl: string;
+  path: string;
+  exists: boolean;
+}
+
+export interface UploadResult {
+  crate: string;
+  kind: "zip" | "metadata";
+  files: {
+    local: number;
+    found: number;
+    missing: { "@id": string; contentUrl: string }[];
+    missing_truncated: boolean;
+  };
+}
+
+/** Where the browser downloads one entity's n-th local contentUrl. */
+export const fileUrl = (id: string, n = 0) =>
+  `/rocrate/file?id=${encodeURIComponent(id)}${n ? `&n=${n}` : ""}`;
+
+export const crateFiles = (crateId: string) =>
+  get<{ files: LocalFile[] }>(
+    `/rocrate/files?id=${encodeURIComponent(crateId)}`,
+  ).then((r) => r.files);
+
+export async function uploadCrate(file: File): Promise<UploadResult> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch("/rocrate/upload", { method: "POST", body });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}

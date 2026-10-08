@@ -20,8 +20,11 @@ import {
   resolve,
   evidenceGraph,
   listEntities,
+  crateFiles,
+  fileUrl,
   Envelope,
   EntitySummary,
+  LocalFile,
 } from "../api";
 import { RawGraphData } from "../types/graph";
 import { viewPath } from "../links";
@@ -141,6 +144,55 @@ const JsonBlock = styled.pre`
   overflow-x: auto;
 `;
 
+const FileList = styled.ul`
+  list-style: none;
+  margin: 0 0 32px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+`;
+
+const FileItem = styled.li`
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13.5px;
+  color: ${({ theme }) => theme.colors.ink2};
+`;
+
+const DownloadLink = styled.a`
+  font-weight: 600;
+  font-size: 13.5px;
+  color: ${({ theme }) => theme.colors.primary};
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+`;
+
+const DownloadButton = styled.a`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: ${({ theme }) => theme.colors.primary};
+  background: ${({ theme }) => theme.colors.surface};
+  border: 1px solid ${({ theme }) => theme.colors.borderStrong};
+  border-radius: ${({ theme }) => theme.borderRadius.sm};
+  text-decoration: none;
+  transition: background-color 0.2s ease;
+
+  &:hover {
+    background: ${({ theme }) => theme.colors.primaryTint};
+  }
+`;
+
 const ErrorNote = styled.p`
   color: ${({ theme }) => theme.colors.danger};
   font-size: 14px;
@@ -164,7 +216,36 @@ const typeTags = (type: string | string[] | undefined): string[] => {
     .filter((t) => t && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()));
 };
 
-const ContentsSection = ({ crateId }: { crateId: string }) => {
+const baseName = (url: string) => url.split("/").filter(Boolean).pop() ?? url;
+
+/** This entity's local contentUrls: a download link, or why there is none. */
+const FilesSection = ({ files }: { files: LocalFile[] }) => (
+  <>
+    <SectionHeader title="Files" />
+    <FileList>
+      {files.map((f) => (
+        <FileItem key={f.n}>
+          {f.exists ? (
+            <DownloadLink href={fileUrl(f["@id"], f.n)} download>
+              ↓ {baseName(f.contentUrl)}
+            </DownloadLink>
+          ) : (
+            <span>{baseName(f.contentUrl)} — not on this server</span>
+          )}
+          <Mono>{f.contentUrl}</Mono>
+        </FileItem>
+      ))}
+    </FileList>
+  </>
+);
+
+const ContentsSection = ({
+  crateId,
+  files,
+}: {
+  crateId: string;
+  files: LocalFile[];
+}) => {
   const [entities, setEntities] = useState<EntitySummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -188,6 +269,10 @@ const ContentsSection = ({ crateId }: { crateId: string }) => {
   if (!entities.length) return null;
 
   const shown = filter ? entities.filter((e) => e.type === filter) : entities;
+  const firstFile = new Map<string, LocalFile>();
+  files
+    .filter((f) => f.exists)
+    .forEach((f) => firstFile.has(f["@id"]) || firstFile.set(f["@id"], f));
 
   return (
     <div style={{ marginTop: 40 }}>
@@ -212,6 +297,7 @@ const ContentsSection = ({ crateId }: { crateId: string }) => {
             <Th style={{ width: "40%" }}>Name</Th>
             <Th>Type</Th>
             <Th style={{ width: "40%" }}>Identifier</Th>
+            {firstFile.size > 0 && <Th style={{ width: "1%" }}>File</Th>}
           </tr>
         </thead>
         <tbody>
@@ -226,6 +312,19 @@ const ContentsSection = ({ crateId }: { crateId: string }) => {
               <Td>
                 <TdMono>{e.id}</TdMono>
               </Td>
+              {firstFile.size > 0 && (
+                <Td>
+                  {firstFile.has(e.id) && (
+                    <DownloadButton
+                      href={fileUrl(e.id, firstFile.get(e.id)!.n)}
+                      title={baseName(firstFile.get(e.id)!.contentUrl)}
+                      download
+                    >
+                      ↓ Download
+                    </DownloadButton>
+                  )}
+                </Td>
+              )}
             </Tr>
           ))}
         </tbody>
@@ -249,6 +348,18 @@ const EntityPage = () => {
   const [graphData, setGraphData] = useState<RawGraphData | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Local files of the crate this entity lives in; [] when there are none
+  // or the crate can't be read -- the page works without them.
+  const [files, setFiles] = useState<LocalFile[]>([]);
+
+  useEffect(() => {
+    setFiles([]);
+    const crate = envelope?.sourceCrate;
+    if (!crate) return;
+    crateFiles(crate)
+      .then(setFiles)
+      .catch(() => setFiles([]));
+  }, [envelope?.sourceCrate]);
 
   useEffect(() => {
     setEnvelope(null);
@@ -291,6 +402,13 @@ const EntityPage = () => {
       ? envelope.sourceCrate
       : null;
 
+  const ownFiles = files.filter((f) => f["@id"] === envelope["@id"]);
+  const fileLinks = Object.fromEntries(
+    ownFiles
+      .filter((f) => f.exists)
+      .map((f) => [f.contentUrl, fileUrl(f["@id"], f.n)]),
+  );
+
   return (
     <PageBody>
       <TitleRow>
@@ -328,9 +446,12 @@ const EntityPage = () => {
 
       {tab === "metadata" && (
         <>
+          {ownFiles.length > 0 && <FilesSection files={ownFiles} />}
           <SectionHeader title="Properties" />
-          <MetadataView metadata={meta} />
-          {isCrate && <ContentsSection crateId={envelope["@id"]} />}
+          <MetadataView metadata={meta} fileLinks={fileLinks} />
+          {isCrate && (
+            <ContentsSection crateId={envelope["@id"]} files={files} />
+          )}
         </>
       )}
       {tab === "graph" &&

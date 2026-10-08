@@ -164,6 +164,7 @@ def local_files(data: dict, crate_dir: Path) -> list[dict]:
     for node in data.get("@graph") or []:
         if not isinstance(node, dict) or not isinstance(node.get("@id"), str):
             continue
+        n = 0
         for url in _content_urls(node):
             rel = local_reference(url)
             if rel is None:
@@ -171,12 +172,38 @@ def local_files(data: dict, crate_dir: Path) -> list[dict]:
             path = crate_dir / rel
             rows.append({
                 "@id": node["@id"],
+                "n": n,
                 "name": node.get("name") if isinstance(node.get("name"), str) else None,
                 "contentUrl": url,
                 "path": str(path),
                 "exists": path.exists(),
             })
+            n += 1
     return rows
+
+
+def served_file(data: dict, crate_dir: Path, entity_id: str, n: int = 0) -> Path:
+    """The file on disk behind one entity's n-th local contentUrl.
+
+    The path must resolve (symlinks followed) to a regular file inside
+    `crate_dir`: a crate can hand out its own files and nothing else,
+    whatever its contentUrl says. Raises LookupError with a reason.
+    """
+    node = next((x for x in data.get("@graph") or []
+                 if isinstance(x, dict) and x.get("@id") == entity_id), None)
+    if node is None:
+        raise LookupError(f"{entity_id} is not in its crate's metadata")
+    local = [rel for rel in map(local_reference, _content_urls(node)) if rel]
+    if not 0 <= n < len(local):
+        raise LookupError(f"{entity_id} has no local contentUrl #{n}")
+    root = crate_dir.resolve()
+    try:
+        path = (crate_dir / local[n]).resolve(strict=True)
+    except OSError:
+        raise LookupError(f"{local[n]} is not on this server")
+    if not path.is_relative_to(root) or not path.is_file():
+        raise LookupError(f"{local[n]} is not a file inside the crate")
+    return path
 
 
 def file_report(rows: list[dict], limit: int = 50) -> dict:

@@ -1,4 +1,4 @@
-"""The whole HTTP surface: fourteen endpoints over a SQLite index.
+"""The whole HTTP surface: sixteen endpoints over a SQLite index.
 
 Deployment posture -- read this before exposing the port
 --------------------------------------------------------
@@ -8,10 +8,11 @@ hands the server a path on the local filesystem and it indexes what it
 finds there, copying nothing. Upload is the one exception: a peer with
 no shared mount POSTs a zip and the server unpacks it under
 FAIRSCAPE_LITE_UPLOADS, then registers the result like any other path
-(see upload.py for how local file references are kept intact). The
-server still never serves file bytes -- a local `contentUrl` resolves
-because the peer mounts the same tree, or because GET /rocrate/files
-tells them the path.
+(see upload.py for how local file references are kept intact).
+GET /rocrate/file serves the bytes behind a local `contentUrl`, but only
+a file that resolves inside the directory of the crate that lists it --
+so a crate can hand out its own files, uploaded or registered by path,
+and nothing else on the host.
 
 FAIRSCAPE_LITE_ROOT confines registration to one directory. Without it,
 anyone who can reach the port can ask the server to read any
@@ -250,6 +251,36 @@ def crate_files(
         "uploaded": uploads.is_uploaded(path),
         "files": uploads.local_files(data, crate_dir),
     }
+
+
+@app.get("/rocrate/file")
+def crate_file(
+    id: str = Query(description="the @id of the entity whose contentUrl to fetch"),
+    n: int = Query(default=0, ge=0, description="which local contentUrl, "
+                                               "if the entity lists several"),
+    con=Depends(connection),
+):
+    """Download the file behind an entity's local contentUrl.
+
+    `file:///data/x.csv` on a dataset in an uploaded zip comes back as
+    the bytes of `<crate dir>/data/x.csv`. Remote contentUrls are not
+    served here; follow them directly.
+    """
+    from fastapi.responses import FileResponse
+
+    entity = must_resolve(con, id)
+    path = db.crate_path(con, entity.source_crate)
+    if path is None:
+        raise HTTPException(404, f"no crate registered for {entity.source_crate}")
+    try:
+        data = db.read_crate(path)
+    except db.MissingCrateFile as exc:
+        raise HTTPException(409, str(exc))
+    try:
+        target = uploads.served_file(data, Path(path).parent, entity.id, n)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    return FileResponse(target, filename=target.name)
 
 
 @app.get("/rocrate/stale")

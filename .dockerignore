@@ -1,0 +1,15 @@
+.git
+.pytest_cache
+.venv
+**/__pycache__
+*.egg-info
+build
+web/node_modules
+web/dist
+web/tsconfig.tsbuildinfo
+*.db
+*.db-wal
+*.db-shm
+uploads
+tests
+scripts

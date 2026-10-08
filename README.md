@@ -36,7 +36,22 @@ Or upload a zipped crate:
 curl -F file=@my-crate.zip localhost:8000/rocrate/upload
 ```
 
-Then open http://localhost:8000/ui/.
+Then open http://localhost:8000/ui/. The dashboard has an **Upload crate**
+button too. A zip is unpacked as it is, so a `contentUrl` like
+`file:///data/x.csv` still points at its file. Dataset pages then show a
+download link for each local file the server has.
+
+## Docker
+
+```bash
+docker build -t fairscape-lite .
+docker run -p 8000:8000 fairscape-lite                     # nothing kept
+docker run -p 8000:8000 -v lite-data:/data fairscape-lite  # index and uploads kept
+```
+
+The index and uploads live under `/data` in the container. Path registration
+(`POST /rocrate`) only accepts paths under `/data`, so to register crates from
+the host, mount them there (for example `-v ~/crates:/data/crates:ro`).
 
 ## Endpoints
 
@@ -50,6 +65,7 @@ Then open http://localhost:8000/ui/.
 | `GET /evidencegraph/ark:{naan}/{postfix}` | Returns the provenance graph |
 | `GET /entity/links?id=` | Returns the edges into and out of one `@id` |
 | `GET /rocrate/files?id=` | Returns a crate's local files, found on disk |
+| `GET /rocrate/file?id=&n=` | Downloads the file behind an entity's local `contentUrl` (only files inside its crate's folder) |
 | `DELETE /rocrate?id=` | Removes a crate from the index |
 
 The full list is at `/docs` while the server is running.

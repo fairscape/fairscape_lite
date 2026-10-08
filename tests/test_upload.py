@@ -358,3 +358,55 @@ def test_real_fixture_crate_round_trips(client, tmp_path):
     assert body["files"]["local"] == 0       # its contentUrls are all "Embargoed"
     on_disk = json.loads(Path(body["path"]).read_text())
     assert on_disk == json.loads((FIXTURES / "LakeDB" / "ro-crate-metadata.json").read_text())
+
+
+# --------------------------------------------------------------------------
+# GET /rocrate/file: the bytes behind a local contentUrl
+# --------------------------------------------------------------------------
+
+def test_file_endpoint_serves_an_uploaded_file(client, tmp_path):
+    post(client, build_zip(tmp_path))
+    res = client.get("/rocrate/file", params={"id": DATA})
+    assert res.status_code == 200
+    assert res.text == "a,b\n1,2\n"
+    assert 'filename="table.csv"' in res.headers["content-disposition"]
+    row = client.get("/rocrate/files", params={"id": ROOT}).json()["files"][0]
+    assert row["n"] == 0
+
+
+def test_file_endpoint_picks_the_nth_local_url(client, tmp_path):
+    node = dataset(content_url=["https://example.org/remote.csv",
+                                "data/a.csv", "file:///data/b.csv"])
+    post(client, build_zip(tmp_path, nodes=[node],
+                           files={"data/a.csv": "A", "data/b.csv": "B"}))
+    assert client.get("/rocrate/file", params={"id": DATA, "n": 0}).text == "A"
+    assert client.get("/rocrate/file", params={"id": DATA, "n": 1}).text == "B"
+    assert client.get("/rocrate/file", params={"id": DATA, "n": 2}).status_code == 404
+
+
+def test_file_endpoint_404s_for_missing_and_remote_files(client, tmp_path):
+    remote = dataset("ark:99999/remote", "https://example.org/x.csv")
+    absent = dataset("ark:99999/absent", "file:///data/nope.csv")
+    post(client, build_zip(tmp_path, nodes=[remote, absent], files={}))
+    assert client.get("/rocrate/file", params={"id": "ark:99999/remote"}).status_code == 404
+    assert client.get("/rocrate/file", params={"id": "ark:99999/absent"}).status_code == 404
+    assert client.get("/rocrate/file", params={"id": "ark:99999/unknown"}).status_code == 404
+
+
+def test_file_endpoint_refuses_paths_outside_the_crate(client, tmp_path):
+    (tmp_path / "secret.txt").write_text("nope")
+    sneaky = dataset("ark:99999/sneaky", "../../secret.txt")
+    path = write_crate(tmp_path / "a" / "b", "ark:99999/by-path-sneaky", nodes=[sneaky])
+    client.post("/rocrate", json={"path": str(path)})
+    assert (tmp_path / "a" / "b" / "../../secret.txt").exists()
+    assert client.get("/rocrate/file", params={"id": "ark:99999/sneaky"}).status_code == 404
+
+
+def test_file_endpoint_refuses_symlinks_out_of_the_crate(client, tmp_path):
+    (tmp_path / "secret.txt").write_text("nope")
+    linked = dataset("ark:99999/linked", "data/link.txt")
+    path = write_crate(tmp_path / "c", "ark:99999/by-path-link", nodes=[linked])
+    (tmp_path / "c" / "data").mkdir()
+    (tmp_path / "c" / "data" / "link.txt").symlink_to(tmp_path / "secret.txt")
+    client.post("/rocrate", json={"path": str(path)})
+    assert client.get("/rocrate/file", params={"id": "ark:99999/linked"}).status_code == 404

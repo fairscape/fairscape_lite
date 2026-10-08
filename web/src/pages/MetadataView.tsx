@@ -31,6 +31,10 @@ const ExternalLink = styled.a`
   word-break: break-all;
 `;
 
+const FileLink = styled(ExternalLink)`
+  color: ${({ theme }) => theme.colors.primary};
+`;
+
 const JsonBlock = styled.pre`
   font-family: ${({ theme }) => theme.fonts.mono};
   font-size: 12px;
@@ -75,8 +79,17 @@ const isRef = (v: unknown): v is { "@id": string } =>
   typeof (v as any)["@id"] === "string" &&
   Object.keys(v as object).length === 1;
 
-const Value = ({ value }: { value: any }) => {
+// contentUrl -> download href, for local files this server can serve.
+type FileLinks = Record<string, string>;
+
+const Value = ({ value, links }: { value: any; links?: FileLinks }) => {
   if (value === null || value === undefined) return <>—</>;
+  if (typeof value === "string" && links?.[value])
+    return (
+      <FileLink href={links[value]} download>
+        {value} ↓
+      </FileLink>
+    );
   if (isRef(value)) {
     const id = value["@id"];
     return <RefLink to={viewPath(id)}>{id}</RefLink>;
@@ -95,14 +108,14 @@ const Value = ({ value }: { value: any }) => {
   return <JsonBlock>{JSON.stringify(value, null, 2)}</JsonBlock>;
 };
 
-const ArrayValue = ({ items }: { items: any[] }) => {
+const ArrayValue = ({ items, links }: { items: any[]; links?: FileLinks }) => {
   const [expanded, setExpanded] = useState(false);
   const shown = expanded ? items : items.slice(0, COLLAPSE_AT);
   return (
     <ValueStack>
       {shown.map((item, i) => (
         <span key={i} style={{ minWidth: 0 }}>
-          <Value value={item} />
+          <Value value={item} links={links} />
         </span>
       ))}
       {items.length > COLLAPSE_AT && !expanded && (
@@ -114,7 +127,13 @@ const ArrayValue = ({ items }: { items: any[] }) => {
   );
 };
 
-const MetadataView = ({ metadata }: { metadata: Record<string, any> }) => {
+const MetadataView = ({
+  metadata,
+  fileLinks,
+}: {
+  metadata: Record<string, any>;
+  fileLinks?: FileLinks;
+}) => {
   const entries = Object.entries(metadata).filter(([k]) => !SKIP.has(k));
   if (!entries.length)
     return <p style={{ color: "#51626B" }}>No further metadata fields.</p>;
@@ -125,9 +144,15 @@ const MetadataView = ({ metadata }: { metadata: Record<string, any> }) => {
           <DefTerm>{key}</DefTerm>
           <DefValue>
             {Array.isArray(value) ? (
-              <ArrayValue items={value} />
+              <ArrayValue
+                items={value}
+                links={key === "contentUrl" ? fileLinks : undefined}
+              />
             ) : (
-              <Value value={value} />
+              <Value
+                value={value}
+                links={key === "contentUrl" ? fileLinks : undefined}
+              />
             )}
           </DefValue>
         </DefRow>

@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styled from "styled-components";
 import { Link } from "react-router-dom";
 import {
   Eyebrow,
-  GhostButton,
+  SecondaryButton,
   SectionHeader,
   Table,
   Th,
@@ -14,7 +14,13 @@ import {
 import { HeroSection } from "../components/shared/DirectionA";
 import LoadingSpinner from "../components/common/LoadingSpinner";
 import { PageBody } from "../components/Layout";
-import { listCrates, listEntities, CrateSummary } from "../api";
+import {
+  listCrates,
+  listEntities,
+  uploadCrate,
+  CrateSummary,
+  UploadResult,
+} from "../api";
 import { viewPath } from "../links";
 
 const HeroInner = styled.div`
@@ -82,6 +88,83 @@ const ErrorNote = styled.p`
   font-size: 14px;
 `;
 
+const UploadBox = styled.div`
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 16px 18px;
+  margin-bottom: 28px;
+  border: 1px dashed ${({ theme }) => theme.colors.borderStrong};
+  border-radius: ${({ theme }) => theme.borderRadius.sm};
+  background: ${({ theme }) => theme.colors.surface};
+  font-size: 13.5px;
+  color: ${({ theme }) => theme.colors.ink2};
+`;
+
+const UploadNote = styled.span<{ $error?: boolean }>`
+  color: ${({ theme, $error }) =>
+    $error ? theme.colors.danger : theme.colors.ink2};
+`;
+
+/** Pick a crate zip (or a bare ro-crate-metadata.json) and POST it. */
+const UploadPanel = ({ onUploaded }: { onUploaded: () => void }) => {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<UploadResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const send = (file: File) => {
+    setBusy(true);
+    setResult(null);
+    setError(null);
+    uploadCrate(file)
+      .then((r) => {
+        setResult(r);
+        onUploaded();
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => {
+        setBusy(false);
+        if (input.current) input.current.value = "";
+      });
+  };
+
+  return (
+    <UploadBox>
+      <input
+        ref={input}
+        type="file"
+        accept=".zip,.json,application/zip,application/json"
+        style={{ display: "none" }}
+        onChange={(e) => e.target.files?.[0] && send(e.target.files[0])}
+      />
+      <SecondaryButton disabled={busy} onClick={() => input.current?.click()}>
+        {busy ? "Uploading…" : "Upload crate"}
+      </SecondaryButton>
+      {!result && !error && (
+        <UploadNote>
+          A .zip of the crate folder (ro-crate-metadata.json plus the files it
+          points to), or a bare ro-crate-metadata.json.
+        </UploadNote>
+      )}
+      {error && <UploadNote $error>Upload failed: {error}</UploadNote>}
+      {result && (
+        <UploadNote>
+          Registered <NameLink to={viewPath(result.crate)}>{result.crate}</NameLink>
+          {result.files.local > 0 &&
+            ` · ${result.files.found} of ${result.files.local} local files found`}
+          {result.files.missing.length > 0 &&
+            ` (missing: ${result.files.missing
+              .slice(0, 3)
+              .map((m) => m.contentUrl)
+              .join(", ")}${result.files.missing.length > 3 ? ", …" : ""})`}
+        </UploadNote>
+      )}
+    </UploadBox>
+  );
+};
+
 const truncate = (text: string | null, n = 160) =>
   text && text.length > n ? `${text.slice(0, n).trimEnd()}…` : text;
 
@@ -94,7 +177,7 @@ const DashboardPage = () => {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     Promise.all([listCrates(), listEntities({ type: "ROCrate" })])
       .then(([crates, roots]) => {
         const byId = new Map(roots.map((e) => [e.id, e]));
@@ -109,6 +192,8 @@ const DashboardPage = () => {
       .catch((e) => setError(e.message));
   }, []);
 
+  useEffect(load, [load]);
+
   return (
     <>
       <HeroSection>
@@ -116,7 +201,7 @@ const DashboardPage = () => {
           <Eyebrow style={{ color: "#5FB3BF" }}>LOCAL METADATA STORE</Eyebrow>
           <HeroTitle>Registered RO-Crates</HeroTitle>
           <HeroSub>
-            Crates indexed from this machine. Open one to browse its metadata
+            Crates indexed on or uploaded to this server. Open one to browse its metadata
             and evidence graph, or search across everything.
           </HeroSub>
         </HeroInner>
@@ -126,13 +211,14 @@ const DashboardPage = () => {
           index={rows ? String(rows.length).padStart(2, "0") : ""}
           title="Crates"
         />
+        <UploadPanel onUploaded={load} />
         {error && <ErrorNote>Could not load crates: {error}</ErrorNote>}
         {!error && rows === null && <LoadingSpinner />}
         {rows !== null && rows.length === 0 && (
           <Empty>
-            Nothing registered yet. Index a crate with{" "}
-            <code>POST /rocrate {"{"}"path": "…"{"}"}</code>, or upload a zip
-            with <code>POST /rocrate/upload</code>, and it will appear here.
+            Nothing registered yet. Upload a crate above, or index one with{" "}
+            <code>POST /rocrate {"{"}"path": "…"{"}"}</code>, and it will
+            appear here.
           </Empty>
         )}
         {rows !== null && rows.length > 0 && (
